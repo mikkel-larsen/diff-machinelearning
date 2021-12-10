@@ -2,15 +2,16 @@ import matplotlib.pyplot as plt
 import numpy as np
 from numpy import random
 from scipy.stats import norm
+from sklearn.linear_model import LinearRegression
 
 from simulate_data import BS
 from simulate_data import transform
 
-n = 10000
+n = 2000
 strike = 100
 rf_rate = 0.02
 vol = 0.15
-T = 0.5
+T = 0.3
 
 model = BS(rf_rate, vol, T)
 
@@ -33,16 +34,34 @@ def design_matrix(x, p):
     X = np.array([x ** i for i in range(p+1)])
     return np.transpose(X)
 
-def fit_parameters(X, y):
+def fit_poly(x, y, p, lmbda=0):
+    X = design_matrix(x, p)
     X_t = np.transpose(X)
-    return np.dot(np.linalg.solve(np.dot(X_t, X), X_t), y)
+    p = len(X_t)
+    return np.dot(np.linalg.solve(np.matmul(X_t, X) + np.identity(p) * lmbda, X_t), y)
+
+def fit_poly_diff(x, c, D, p, w):
+    X = design_matrix(x, p)
+    X_t = np.transpose(X)
+    n = len(x)
+    Y = design_matrix(xpoints, p-1)
+    Y = np.insert(Y, 0, np.zeros(n), 1)
+    i = [y for y in range(p+1)]
+    Y = np.multiply(Y, i)
+    Y_t = np.transpose(Y)
+    return np.linalg.solve(w * np.dot(X_t, X) + (1 - w) * np.dot(Y_t, Y), w * np.dot(X_t, c) + (1 - w) * np.dot(Y_t, D))
 
 
-fitted_params = fit_parameters(design_matrix(xpoints, 5), ypoints)
-print("Fitted parameters ({0}): {1}".format(len(fitted_params), fitted_params))
+D = [1 if x > strike else 0 for x in sim] * sim / xpoints
 
-
+plt.subplot(2,1,1)
 plt.scatter(xpoints, ypoints, alpha=0.1)
 plt.plot(xpoints, true_BS(xpoints, rf_rate, vol, T, strike), linestyle='dotted')
-plt.plot(xpoints, poly(xpoints, fitted_params), color='red')
+plt.plot(xpoints, poly(xpoints, fit_poly_diff(xpoints, ypoints, D, 4, 0.5)), color='red', linestyle='solid')
+
+plt.subplot(2,1,2)
+plt.scatter(xpoints, ypoints, alpha=0.1)
+plt.plot(xpoints, true_BS(xpoints, rf_rate, vol, T, strike), linestyle='dotted')
+plt.plot(xpoints, poly(xpoints, fit_poly(xpoints, ypoints, 4)), color='red', linestyle='solid')
+
 plt.show()
