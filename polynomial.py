@@ -3,73 +3,102 @@ import numpy as np
 from numpy import random
 from scipy.stats import norm
 from sklearn.linear_model import LinearRegression
+from sklearn.preprocessing import PolynomialFeatures
+from scipy.special import binom
 
-from simulate_data import BS
-from simulate_data import transform
+from models import Bachelier
+from models import Basket
 
-n = 200
+
+n = 500
+m = 5
+w = np.array([1/m for i in range(1, m+1)])
 strike = 100
-rf_rate = 0.02
-vol = 0.15
-T = 0.3
+rf_rate = 0.0
+vol = 30
+cov = np.identity(m) * (vol ** 2)
+T = 0.2
 
-model = BS(rf_rate, vol, T)
-xpoints = transform(np.linspace(20, 180, n), 100)
-sim = model.BS_simulate_endpoint(n, xpoints)
-ypoints = np.maximum(sim - strike, 0)
+Bach = Bachelier(rf_rate, vol)
+basket = Basket(m, w, strike)
 
-def true_BS(spot, rf_rate, vol, T, strike):
-    d1 = (np.log(spot / strike) + (rf_rate + 0.5 * vol ** 2) * T) / (vol * np.sqrt(T))
-    d2 = d1 - vol * np.sqrt(T)
-    return spot * norm.cdf(d1) - strike * np.exp(-rf_rate * T) * norm.cdf(d2)
+basket.make_basket_uniform(50, 150, n)
 
-def poly(x, params):
-    ret = 0
-    for p in range(len(params)):
-        ret += params[p] * x ** p
-    return ret
+sim = np.array(Bach.simulate_basket_endpoint(basket, cov, T))
+# print("sim: {}".format(sim))
+sim_basket = np.dot(sim, w).reshape((-1, 1))
+# print("sim cumulative: {}".format(sim_basket))
+ypoints = np.array(np.maximum(sim_basket - strike, 0))
+# print("y: {}".format(ypoints))
+
+
+def poly(x, params, p):
+    X = PolynomialFeatures(degree=(p)).fit_transform(x)
+    return np.dot(X, params)
 
 def design_matrix(x, p):
-    X = np.array([x ** i for i in range(p+1)])
-    return np.transpose(X)
+    return PolynomialFeatures(degree=p).fit_transform(x)
 
 def fit_poly(x, y, p, lmbda=0):
     X = design_matrix(x, p)
     X_t = np.transpose(X)
-    p = len(X_t)
-    return np.dot(np.linalg.solve(np.dot(X_t, X) + np.identity(p) * lmbda, X_t), y)
+    n = np.shape(X)[1]
+    return np.dot(np.linalg.solve(np.dot(X_t, X) + np.identity(n) * lmbda, X_t), y)
 
-def fit_poly_diff(x, c, D, p, lmbda=None):
+def fit_poly_diff(x, y, D, p, lmbda=None):
     if lmbda == None:
-        lmbda = np.mean(c ** 2) / np.mean(D ** 2)
-    X = design_matrix(x, p)
+        lmbda = np.mean(y ** 2) / np.mean(D ** 2)
+
+    poly_features = PolynomialFeatures(degree=p)
+    X = poly_features.fit_transform(x)
     X_t = np.transpose(X)
-    n = len(x)
-    Y = design_matrix(xpoints, p-1)
+    powers = poly_features.powers_
+    D = np.transpose(np.transpose(powers)[:, :, np.newaxis] * np.transpose(X), axes=(0, 2, 1)) / np.transpose(x[:, :, np.newaxis], axes=(1, 0, 2))
+    D_t = np.transpose(D, axes=(0, 2, 1))
+    '''Y = design_matrix(x, p-1)
     Y = np.insert(Y, 0, np.zeros(n), 1)
     i = [y for y in range(p+1)]
-    Y = np.multiply(Y, i)
-    Y_t = np.transpose(Y)
-    return np.linalg.solve(np.dot(X_t, X) + lmbda * np.dot(Y_t, Y), np.dot(X_t, c) + lmbda * np.dot(Y_t, D))
-    #return np.linalg.solve(w * np.dot(X_t, X) + (1 - w) * np.dot(Y_t, Y), w * np.dot(X_t, c) + (1 - w) * np.dot(Y_t, D))
+    Y = np.multiply(Y, i)'''
+    p1 = np.dot(X_t, X) + lmbda * np.sum(np.matmul(D_t, D), axis=0)
+    p2 = np.dot(X_t, y) + lmbda * np.sum(np.matmul(D_t, Z), axis=0)
+    return np.linalg.solve(p1, p2)
 
 
-D = [1 if x > strike else 0 for x in sim] * sim / xpoints
+Z = np.dot(np.where(sim_basket > strike, 1, 0).reshape(-1, 1), w.reshape(1, -1))
+Z = np.transpose(Z[:, :, np.newaxis], axes=(1, 0, 2))
+print("Z shape:\n{}".format(np.shape(Z)))
 
-print("Y^2 / Z^2: {}".format(np.mean(ypoints ** 2) / np.mean(D ** 2)))
-print("sd(D) / (sd(D) + sd(C): {}".format(np.std(D) / (np.std(D) + np.std(ypoints))))
+print("Y^2 / Z^2: {}".format(np.dot(np.transpose(ypoints), ypoints) / np.dot(np.transpose(Z[0, :, :]), Z[0, :, :])))
+print("sd(D) / (sd(D) + sd(C): {}".format(np.std(Z) / (np.std(Z) + np.std(ypoints))))
 
+lmbda = np.dot(np.transpose(ypoints), ypoints) / np.dot(np.transpose(Z[0, :, :]), Z[0, :, :])
+print("lambda:\n{}".format(lmbda))
+p = 4
 
-lmbda = np.mean(ypoints ** 2) / np.mean(D ** 2)
+xpoints_basket = np.dot(basket.spots, w)
 
-plt.subplot(2,1,1)
-plt.scatter(xpoints, ypoints, alpha=0.1)
-plt.plot(xpoints, true_BS(xpoints, rf_rate, vol, T, strike), linestyle='dotted')
-plt.plot(xpoints, poly(xpoints, fit_poly_diff(xpoints, ypoints, D, 7)), color='red', linestyle='solid')
+n = 1000
+basket_test = Basket(m, w, strike)
+basket_test.make_basket_uniform(50, 150, n)
+xpoints_basket_test = np.dot(basket_test.spots, w)
 
-plt.subplot(2,1,2)
-plt.scatter(xpoints, ypoints, alpha=0.1)
-plt.plot(xpoints, true_BS(xpoints, rf_rate, vol, T, strike), linestyle='dotted')
-plt.plot(xpoints, poly(xpoints, fit_poly(xpoints, ypoints, 7)), color='red', linestyle='solid')
+sim_test = np.array(Bach.simulate_basket_endpoint(basket_test, cov, T))
+sim_basket_test = np.dot(sim_test, w).reshape((-1, 1))
+ypoints_test = np.array(np.maximum(sim_basket_test - strike, 0))
+
+plt.subplot(3, 1, 1)
+plt.scatter(xpoints_basket, ypoints, alpha=0.1)
+plt.scatter(xpoints_basket_test, poly(basket_test.spots, fit_poly(basket.spots, ypoints, p), p), color='red', s=1)
+plt.scatter(xpoints_basket_test, Bach.price_basket(basket_test, cov, T), color='green', s=1)
+
+plt.subplot(3, 1, 2)
+plt.scatter(xpoints_basket, ypoints, alpha=0.1)
+plt.scatter(xpoints_basket_test, poly(basket_test.spots, fit_poly(basket.spots, ypoints, p, lmbda*10), p), color='red', s=1)
+plt.scatter(xpoints_basket_test, Bach.price_basket(basket_test, cov, T), color='green', s=1)
+
+plt.subplot(3, 1, 3)
+plt.scatter(xpoints_basket, ypoints, alpha=0.1)
+plt.scatter(xpoints_basket_test, poly(basket_test.spots, fit_poly_diff(basket.spots, ypoints, Z, p, lmbda), p), color='red', s=1)
+plt.scatter(xpoints_basket_test, Bach.price_basket(basket_test, cov, T), color='green', s=1)
 
 plt.show()

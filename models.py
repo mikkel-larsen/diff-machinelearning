@@ -8,7 +8,6 @@ class Basket:
         self.n = n
         self.w = w
         self.strike = strike
-        self.spots = None
 
     def __str__(self):
         return "{}".format(self.spots)
@@ -25,9 +24,9 @@ class Bachelier:
     def price_basket(self, basket, cov, T):
         spot = np.dot(basket.spots, basket.w)
         vol = np.sqrt(np.dot(np.transpose(basket.w), np.dot(cov, basket.w)))
-        if self.rf_rate == 0:
+        if self.rf_rate == 0.0:
             diff = spot - basket.strike
-            const = self.vol * np.sqrt(T)
+            const = vol * np.sqrt(T)
             return diff * norm.cdf(diff / const) + const * norm.pdf(diff / const)
 
         Kstar = basket.strike * np.exp(-self.rf_rate * T)
@@ -47,10 +46,13 @@ class Bachelier:
         return diff * norm.cdf(diff / v) + v * norm.pdf(diff / v)
 
     def simulate_basket_endpoint(self, basket, cov, T):
-        dt = 1 / 252
+        ret = np.array(basket.spots, dtype='float')
         shape = list(np.shape(basket.spots))
         mean = np.zeros(shape[1])
-        ret = np.array(basket.spots, dtype='float')
+        if self.rf_rate == 0:
+            return ret + np.sqrt(T) * random.multivariate_normal(mean, cov, shape[0])
+
+        dt = 1 / 252
         for i in range(int(T * 252)):
             z = random.multivariate_normal(mean, cov, shape[0])
             ret += ret * self.rf_rate * dt + np.sqrt(dt) * z
