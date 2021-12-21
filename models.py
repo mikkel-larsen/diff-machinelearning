@@ -1,21 +1,6 @@
-import matplotlib.pyplot as plt
 import numpy as np
 from numpy import random
 from scipy.stats import norm
-
-class Basket:
-    def __init__(self, n, w, strike):
-        self.n = n
-        self.w = w
-        self.strike = strike
-        self.spots = None
-
-    def __str__(self):
-        return "{}".format(self.spots)
-
-    def make_basket_uniform(self, min, max, m):
-        self.spots = np.random.uniform(min, max, (m, self.n))
-        return self.spots
 
 class Bachelier:
     def __init__(self, rf_rate=0, vol=None):
@@ -42,7 +27,9 @@ class Bachelier:
     def simulate_basket(n, m, min, max, strike, T, w, cov):
         shape = [n, m]  # n simulations of m stocks
         s0 = random.uniform(min, max, shape)  # initialize with uniform dist.
-        b0 = np.dot(s0, w).reshape(-1, 1)  # initial basket value
+        b0 = np.dot(s0, w)  # initial basket value
+        s0 = s0[np.argsort(b0)]
+        b0 = np.sort(b0).reshape(-1, 1)
 
         sT = np.array(s0)
         mean = np.zeros(m)
@@ -56,6 +43,11 @@ class Bachelier:
 
         return s0, b0, payoff, Z
 
+w = np.array([0.5, 0.5])
+cov = np.array([[200, 0], [0, 200]])
+x, b, y, Z = Bachelier.simulate_basket(5, 2, 0, 10, 5, 1, w, cov)
+print(x)
+print(b)
 
 class BlackScholes:
     def __init__(self, rf_rate, vol):
@@ -97,11 +89,10 @@ class BlackScholes:
         return s0, payoff, Z
 
 
-
-def transform(x, K, b = None):
+def transform(x, K, b=None):
     s_min = np.min(x)
     s_max = np.max(x)
-    if b == None:
+    if b is None:
         b = 15 / (s_max - s_min)
     x = (x - s_min) / (s_max - s_min)
     c1 = np.arcsinh(b * (s_min - K))
