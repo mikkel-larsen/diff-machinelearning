@@ -8,6 +8,7 @@ class Basket:
         self.n = n
         self.w = w
         self.strike = strike
+        self.spots = None
 
     def __str__(self):
         return "{}".format(self.spots)
@@ -17,62 +18,44 @@ class Basket:
         return self.spots
 
 class Bachelier:
-    def __init__(self, rf_rate, vol):
+    def __init__(self, rf_rate=0, vol=None):
         self.rf_rate = rf_rate
         self.vol = vol
 
-    def price_basket(self, basket, cov, T):
-        spot = np.dot(basket.spots, basket.w)
-        vol = np.sqrt(np.dot(np.transpose(basket.w), np.dot(cov, basket.w)))
-        if self.rf_rate == 0.0:
-            diff = spot - basket.strike
+    def price(self, spot, strike, T, vol=None, rf_rate=None):
+        if vol is None:
+            vol = self.vol
+        if rf_rate is None:
+            rf_rate = self.rf_rate
+
+        if rf_rate == 0:
+            diff = spot - strike
             const = vol * np.sqrt(T)
             return diff * norm.cdf(diff / const) + const * norm.pdf(diff / const)
 
-        Kstar = basket.strike * np.exp(-self.rf_rate * T)
-        v = vol * np.sqrt((1 - np.exp(-2 * self.rf_rate * T)) / (2 * self.rf_rate))
+        Kstar = strike * np.exp(-rf_rate * T)
+        v = vol * np.sqrt((1 - np.exp(-2 * rf_rate * T)) / (2 * rf_rate))
         diff = (spot - Kstar)
         return diff * norm.cdf(diff / v) + v * norm.pdf(diff / v)
 
-    def price(self, spot, strike, T):
-        if self.rf_rate == 0:
-            diff = spot - strike
-            const = self.vol * np.sqrt(T)
-            return diff * norm.cdf(diff / const) + const * norm.pdf(diff / const)
+    @staticmethod
+    def simulate_basket(n, m, min, max, strike, T, w, cov):
+        shape = [n, m]  # n simulations of m stocks
+        s0 = random.uniform(min, max, shape)  # initialize with uniform dist.
+        b0 = np.dot(s0, w).reshape(-1, 1)  # initial basket value
 
-        Kstar = strike * np.exp(-self.rf_rate * T)
-        v = self.vol * np.sqrt((1 - np.exp(-2 * self.rf_rate * T)) / (2 * self.rf_rate))
-        diff = (spot - Kstar)
-        return diff * norm.cdf(diff / v) + v * norm.pdf(diff / v)
+        sT = np.array(s0)
+        mean = np.zeros(m)
+        sT += np.sqrt(T) * random.multivariate_normal(mean, cov, n)  # Simulated endpoint for all stocks
+        bT = np.dot(sT, w)  # n simulated basket values at time T
 
-    def simulate_basket_endpoint(self, basket, cov, T):
-        ret = np.array(basket.spots, dtype='float')
-        shape = list(np.shape(basket.spots))
-        mean = np.zeros(shape[1])
-        if self.rf_rate == 0:
-            return ret + np.sqrt(T) * random.multivariate_normal(mean, cov, shape[0])
+        payoff = np.maximum(bT - strike, 0).reshape(-1, 1)  # payoff of european call option
 
-        dt = 1 / 252
-        for i in range(int(T * 252)):
-            z = random.multivariate_normal(mean, cov, shape[0])
-            ret += ret * self.rf_rate * dt + np.sqrt(dt) * z
+        Z = np.dot(np.where(bT > strike, 1, 0).reshape(-1, 1), w.reshape(1, -1))  # Pathwise differentials
+        Z = np.transpose(Z[:, :, np.newaxis], axes=(1, 0, 2))  # transpose so dimensions fit
 
-        return ret
-    '''
-    def simulate_endpoint(self, spot, T):
-        dt = 1 / (T * 252)
-        shape = list(np.shape(spot))
-        shape.insert(0, int(T * 252))
-        z = random.standard_normal(shape)
-        ret = np.array(spot, dtype='float')
-        if len(shape) == 3:
-            for i in range(int(T * 252)):
-                ret += ret * self.rf_rate * dt + self.vol * np.sqrt(dt) * z[i, :, :]
-        if len(shape) == 2:
-            for i in range(int(T * 252)):
-                ret += (ret * self.rf_rate * dt + self.vol * np.sqrt(dt) * z[i, :])
-        return ret
-    '''
+        return s0, b0, payoff, Z
+
 
 class BlackScholes:
     def __init__(self, rf_rate, vol):
@@ -82,7 +65,7 @@ class BlackScholes:
     def price(self, spot, strike, T):
         d1 = (np.log(spot / strike) + (self.rf_rate + 0.5 * self.vol ** 2) * T) / (self.vol * np.sqrt(T))
         d2 = d1 - self.vol * np.sqrt(T)
-        return spot * norm.cdf(d1) - strike * np.exp(-self.rf_rate * self.T) * norm.cdf(d2)
+        return spot * norm.cdf(d1) - strike * np.exp(-self.rf_rate * T) * norm.cdf(d2)
 
     def simulate_path(self, spot, T):
         dt = T / 252
@@ -94,9 +77,25 @@ class BlackScholes:
             ret[:, i] = ret[:, i - 1] * (1 + self.rf_rate * dt * + self.vol * np.sqrt(dt) * z[:, i])
         return ret
 
-    def simulate_endpoint(self, n, spot, T):
-        z = random.standard_normal((len(spot), n))
+    def simulate_endpoint(self, spot, T):
+        z = random.standard_normal(np.shape(spot))
         return np.array(spot * np.exp((self.rf_rate - self.vol ** 2 / 2) * T + self.vol * np.sqrt(T) * z))
+
+    def simulate_data(self, n, min, max, strike, T, vol=None, rf_rate=None):
+        if vol is None:
+            vol = self.vol
+        if rf_rate is None:
+            rf_rate = self.rf_rate
+
+        s0 = np.sort(random.uniform(min, max, n)).reshape(-1, 1)
+        z = random.standard_normal(n).reshape(-1, 1)
+        sT = s0 * np.exp((self.rf_rate - self.vol ** 2 / 2) * T + self.vol * np.sqrt(T) * z)
+
+        payoff = np.maximum(sT - strike, 0)
+        Z = np.where(sT > strike, 1, 0) * sT / s0
+
+        return s0, payoff, Z
+
 
 
 def transform(x, K, b = None):
