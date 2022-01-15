@@ -1,83 +1,98 @@
-import matplotlib.pyplot as plt
 import tensorflow as tf
-from tensorflow import keras
-from tensorflow.keras import Sequential
-from tensorflow.keras.layers import Dense
 import numpy as np
-from scipy.stats import norm
+import tensorflow.keras as keras
+from tensorflow.keras.models import load_model
+import matplotlib.pyplot as plt
+from sklearn.preprocessing import StandardScaler
 
-from simulate_data import BS
-from simulate_data import transform
+from models import BlackScholes
 
-def true_BS(spot, rf_rate, vol, T, strike):
-    d1 = (np.log(spot / strike) + (rf_rate + 0.5 * vol ** 2) * T) / (vol * np.sqrt(T))
-    d2 = d1 - vol * np.sqrt(T)
-    return spot * norm.cdf(d1) - strike * np.exp(-rf_rate * T) * norm.cdf(d2)
+# Set parameters
+n = 10000  # Number of samples
+n_test = 200  # Number of samples for testing fit
+strike = 100  # Strike of basket
 
-def create_ANN(x, y, epochs, lmbda, rate, nodes=5):
-    # define the model
-    np.random.seed(1)
-    init = keras.initializers.GlorotNormal(seed=1)
-    model = Sequential()
-    model.add(Dense(nodes, input_shape=(1,), kernel_regularizer=keras.regularizers.l2(lmbda), activation='softplus', kernel_initializer=init))
-    model.add(Dense(nodes, kernel_regularizer=keras.regularizers.l2(lmbda), activation='softplus', kernel_initializer=init))
-    model.add(Dense(nodes, kernel_regularizer=keras.regularizers.l2(lmbda), activation='softplus', kernel_initializer=init))
-    model.add(Dense(nodes, kernel_regularizer=keras.regularizers.l2(lmbda), activation='softplus', kernel_initializer=init))
-    model.add(Dense(1, kernel_regularizer=keras.regularizers.l2(lmbda), activation='linear', kernel_initializer=init))
+# ---------- BLACK-SCHOLES ----------
+rf_rate = 0.02  # Risk-free rate (0 to easily simulate in the Bachelier model)
+vol = 0.2  # Volatility in the model
+T = 0.5  # Time-to-maturity of basket option
 
-    # compile the model
-    opt = keras.optimizers.Adam(learning_rate=rate)
-    model.compile(optimizer=opt, loss='mse')
+# Simulate BS dataset for training and testing
+BS = BlackScholes(rf_rate, vol)
+x, y, D = BS.simulate_data(n, 50, 150, strike, T)
+# y = BS.price(x, strike, T)
+# y_delta = BS.delta(x, strike, T)
 
-    # Callback
-    class myCallback(tf.keras.callbacks.Callback):
-        def on_epoch_end(self, epoch, logs={}):
-            global losses
-            losses.append(logs.get("loss"))
+x_test, y_test, D_test = BS.simulate_data(n_test, 50, 150, strike, T)
+y_test_delta = BS.delta(x_test, strike, T)
 
-    # fit the model
-    model.fit(x, y, epochs=epochs, batch_size=200)
+index = np.random.randint(0, n, 4)
+print("x\n", x[index])
+print("y\n", y[index])
+print("delta\n", D[index])
 
-    return model
 
-n = 30000
-strike = 100
-rf_rate = 0.02
-vol = 0.15
-T = 0.3
+class ANN_reg_and_grad(keras.Model):
+    def __init__(self, mean_, scale_, units=5, activation="softplus", **kwargs):
+        super().__init__(**kwargs)
+        self.mean_ = mean_
+        self.scale_ = scale_
+        self.hidden1 = keras.layers.Dense(units, activation=activation, kernel_initializer="he_normal")
+        self.hidden2 = keras.layers.Dense(units, activation=activation, kernel_initializer="he_normal")
+        self.hidden3 = keras.layers.Dense(units, activation=activation, kernel_initializer="he_normal")
+        self.hidden4 = keras.layers.Dense(units, activation=activation, kernel_initializer="he_normal")
+        self.hidden5 = keras.layers.Dense(units, activation=activation, kernel_initializer="he_normal")
+        self.reg_output = keras.layers.Dense(1)
 
-model = BS(rf_rate, vol, T)
+    def call(self, inputs):
+        with tf.GradientTape() as tape:
+            tape.watch(inputs)
+            inputs_scaled = (inputs - self.mean_) / self.scale_
+            hidden1 = self.hidden1(inputs_scaled)
+            hidden2 = self.hidden2(hidden1)
+            hidden3 = self.hidden3(hidden2)
+            hidden4 = self.hidden4(hidden3)
+            hidden5 = self.hidden4(hidden4)
+            reg_output = self.reg_output(hidden5)
 
-x = np.array([transform(np.linspace(20, 180, n), strike)])
-sim = model.BS_simulate_endpoint(n, x)
-y = np.maximum(sim - strike, 0)
+        grad_output = tape.gradient(reg_output, inputs)
+        return reg_output, grad_output
 
-x = x.reshape(n, 1)
-y = y.reshape(n, 1)
+# scaler = StandardScaler()
+# x = scaler.fit_transform(x)
+# x_test = scaler.transform(x_test)
+# print("X scaled (mean: {0}, std: {1}): \n {2}".format(scaler.mean_.round(3), scaler.scale_.round(3), x[index]))
 
-'''
-m = 30
-loss = np.zeros(m)
-for i in range(m):
-    mod = create_ANN(x, y, 75, 0, 0.00001 + (1 - 0.00001) / 30 * i)
-    loss[i] = mod.evaluate(x, y, verbose=0)
+scaler = StandardScaler()
+scaler.fit_transform(x)
+model = ANN_reg_and_grad(scaler.mean_, scaler.scale_)
 
-print("Final losses: {}".format(loss))
+opt = keras.optimizers.Adam(learning_rate=0.1)
+model.compile(loss='mse', optimizer=opt, loss_weights=[0.1, 0.9])
 
-rates = [0.00001 + (1 - 0.00001) / 30 * i for i in range(m)]
+early_stopping_cb = keras.callbacks.EarlyStopping(patience=8, restore_best_weights=True, monitor='loss', verbose=1)
+lr_scheduler = keras.callbacks.ReduceLROnPlateau(factor=0.1, patience=4, monitor='loss', verbose=0)
+model.fit(x, [y, D], epochs=60, batch_size=100, callbacks=[lr_scheduler, early_stopping_cb])
 
-plt.plot(rates, loss)
-plt.show()
-'''
-'''
-mod = create_ANN(x, y, 50, 0, 0.003)
+yhat, yhat_grad = model.predict(x_test)
+# yhat_grad /= scaler.scale_
 
-# make a prediction
-yhat = model.predict(x)
+# x = scaler.inverse_transform(x)
+# x_test = scaler.inverse_transform(x_test)
+# print("X scaled back: \n", x[index])
 
-# plot
+index_test = np.random.randint(0, n_test, 4)
+print("Predicted regression: \n {} \n Correct: \n {}".format(yhat[index_test], BS.price(x_test[index_test], strike, T)))
+print("Predicted gradient: \n {} \n Correct: \n {}".format(yhat_grad[index_test], BS.delta(x_test[index_test], strike, T)))
+
+plt.subplot(1, 2, 1)
 plt.scatter(x, y, alpha=0.1)
-plt.plot(x, true_BS(x, rf_rate, vol, T, strike), linestyle='dotted', color='black')
-plt.plot(x, yhat, color='red')
+plt.plot(x_test, BS.price(x_test, strike, T), linestyle='dotted', color='black')
+plt.plot(x_test, yhat, color='red')
+
+plt.subplot(1, 2, 2)
+plt.scatter(x, D, alpha=0.1)
+plt.plot(x_test, BS.delta(x_test, strike, T), linestyle='dotted', color='black')
+plt.plot(x_test, yhat_grad, color='red')
+
 plt.show()
-'''
