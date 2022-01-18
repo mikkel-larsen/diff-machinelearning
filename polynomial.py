@@ -70,7 +70,7 @@ lmbda = np.dot(np.transpose(ypoints), ypoints) / np.dot(np.transpose(Z[0, :, :])
 print("lambda: {}".format(lmbda))
 
 
-# Black-Scholes simulated data for regression of call option
+# Black-Scholes simulated data for regression of option option
 vol = 0.20  # Volatility in the model (way lower in the Black-Scholes model)
 
 BS = BlackScholes(rf_rate, vol)
@@ -108,31 +108,31 @@ poly_dreg.fit_differential(Z, lmbda)
 plt.subplot(3, 2, 1)
 plt.scatter(xpoints_bs, ypoints_bs, alpha=0.1, s=20)
 plt.plot(xpoints_bs, poly_BS.predict(xpoints_bs), color='red')
-plt.plot(xpoints_bs, BS.price(xpoints_bs, strike, T), color='green', linestyle='dotted')
+plt.plot(xpoints_bs, BS.call_price(xpoints_bs, strike, T), color='green', linestyle='dotted')
 
 plt.subplot(3, 2, 2)
 plt.plot(xpoints_bs, poly_BS.differential(xpoints_bs), color='red')
-plt.plot(xpoints_bs, BS.delta(xpoints_bs, strike, T), color='green', linestyle='dotted')
+plt.plot(xpoints_bs, BS.call_delta(xpoints_bs, strike, T), color='green', linestyle='dotted')
 
 # Polynomial regression with L2-regularization
 plt.subplot(3, 2, 3)
 plt.scatter(xpoints_bs, ypoints_bs, alpha=0.1, s=20)
 plt.plot(xpoints_bs, poly_BS_l2reg.predict(xpoints_bs), color='red')
-plt.plot(xpoints_bs, BS.price(xpoints_bs, strike, T), color='green', linestyle='dotted')
+plt.plot(xpoints_bs, BS.call_price(xpoints_bs, strike, T), color='green', linestyle='dotted')
 
 plt.subplot(3, 2, 4)
 plt.plot(xpoints_bs, poly_BS_l2reg.differential(xpoints_bs), color='red')
-plt.plot(xpoints_bs, BS.delta(xpoints_bs, strike, T), color='green', linestyle='dotted')
+plt.plot(xpoints_bs, BS.call_delta(xpoints_bs, strike, T), color='green', linestyle='dotted')
 
 # Polynomial regression with differential regularization
 plt.subplot(3, 2, 5)
 plt.scatter(xpoints_bs, ypoints_bs, alpha=0.1, s=20)
 plt.plot(xpoints_bs, poly_BS_dreg.predict(xpoints_bs), color='red')
-plt.plot(xpoints_bs, BS.price(xpoints_bs, strike, T), color='green', linestyle='dotted')
+plt.plot(xpoints_bs, BS.call_price(xpoints_bs, strike, T), color='green', linestyle='dotted')
 
 plt.subplot(3, 2, 6)
 plt.plot(xpoints_bs, poly_BS_dreg.differential(xpoints_bs), color='red')
-plt.plot(xpoints_bs, BS.delta(xpoints_bs, strike, T), color='green', linestyle='dotted')
+plt.plot(xpoints_bs, BS.call_delta(xpoints_bs, strike, T), color='green', linestyle='dotted')
 
 plt.show()
 
@@ -143,21 +143,21 @@ plt.show()
 plt.subplot(3, 1, 1)
 plt.scatter(xpoints_basket, ypoints, alpha=0.1, s=20)
 plt.plot(xpoints_basket_test, poly.predict(xpoints_test), color='red', alpha=0.4, marker="x", ls='none', ms=3, mew=0.5)
-plt.plot(xpoints_basket_test, Bach.price(xpoints_basket_test, strike, T, basket_vol), color='green', linestyle='dotted')
+plt.plot(xpoints_basket_test, Bach.call_price(xpoints_basket_test, strike, T, basket_vol), color='green', linestyle='dotted')
 plt.ylim(-5, 50)
 
 # Polynomial regression with L2-regularization
 plt.subplot(3, 1, 2)
 plt.scatter(xpoints_basket, ypoints, alpha=0.1, s=20)
 plt.plot(xpoints_basket_test, poly_l2reg.predict(xpoints_test), color='red', alpha=0.4, marker="x", ls='none', ms=3, mew=0.5)
-plt.plot(xpoints_basket_test, Bach.price(xpoints_basket_test, strike, T, basket_vol), color='green', linestyle='dotted')
+plt.plot(xpoints_basket_test, Bach.call_price(xpoints_basket_test, strike, T, basket_vol), color='green', linestyle='dotted')
 plt.ylim(-5, 50)
 
 # Polynomial regression with differential regularization
 plt.subplot(3, 1, 3)
 plt.scatter(xpoints_basket, ypoints, alpha=0.1, s=20)
 plt.plot(xpoints_basket_test, poly_dreg.predict(xpoints_test), color='red', alpha=0.4, marker="x", ls='none', ms=3, mew=0.5)
-plt.plot(xpoints_basket_test, Bach.price(xpoints_basket_test, strike, T, basket_vol), color='green', linestyle='dotted')
+plt.plot(xpoints_basket_test, Bach.call_price(xpoints_basket_test, strike, T, basket_vol), color='green', linestyle='dotted')
 plt.ylim(-5, 50)
 
 # plt.savefig('foo.png', dpi=1000, bbox_inches='tight')

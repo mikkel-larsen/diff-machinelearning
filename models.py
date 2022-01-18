@@ -8,7 +8,7 @@ class Bachelier:
         self.rf_rate = rf_rate
         self.vol = vol
 
-    def price(self, spot, strike, T, vol=None, rf_rate=None):
+    def call_price(self, spot, strike, T, vol=None, rf_rate=None):
         if vol is None:
             vol = self.vol
         if rf_rate is None:
@@ -66,7 +66,7 @@ class Bachelier:
         sT += np.sqrt(T) * random.multivariate_normal(mean, cov, n)  # Simulated endpoint for all stocks
         bT = np.dot(sT, w)  # n simulated basket values at time T
 
-        payoff = np.maximum(bT - strike, 0).reshape(-1, 1)  # payoff of european call option
+        payoff = np.maximum(bT - strike, 0).reshape(-1, 1)  # payoff of european option option
 
         Z = np.dot(np.where(bT > strike, 1, 0).reshape(-1, 1), w.reshape(1, -1))  # Pathwise differentials
         Z = np.transpose(Z[:, :, np.newaxis], axes=(1, 0, 2))  # transpose so dimensions fit
@@ -79,28 +79,29 @@ class BlackScholes:
         self.rf_rate = rf_rate
         self.vol = vol
 
-    def price(self, spot, strike, T):
+    def call_price(self, spot, strike, T):
         d1 = (np.log(spot / strike) + (self.rf_rate + 0.5 * self.vol ** 2) * T) / (self.vol * np.sqrt(T))
         d2 = d1 - self.vol * np.sqrt(T)
         return spot * norm.cdf(d1) - strike * np.exp(-self.rf_rate * T) * norm.cdf(d2)
 
-    def delta(self, spot, strike, T):
+    def call_delta(self, spot, strike, T):
         d1 = (np.log(spot / strike) + (self.rf_rate + 0.5 * self.vol ** 2) * T) / (self.vol * np.sqrt(T))
         return norm.cdf(d1)
 
-    def simulate_path(self, spot, T):
-        dt = T / 252
-        n = len(spot)
-        z = random.standard_normal((n, int(1 / dt)))
-        ret = np.zeros((n, int(1 / dt)), dtype=float)
-        ret[:, 0] = spot
-        for i in range(1, int(1 / dt)):
-            ret[:, i] = ret[:, i - 1] * (1 + self.rf_rate * dt * + self.vol * np.sqrt(dt) * z[:, i])
-        return ret
+    def put_price(self, spot, strike, T):
+        d1 = (np.log(spot / strike) + (self.rf_rate + 0.5 * self.vol ** 2) * T) / (self.vol * np.sqrt(T))
+        d2 = d1 - self.vol * np.sqrt(T)
+        return strike * np.exp(-self.rf_rate * T) * norm.cdf(-d2) - spot * norm.cdf(-d1)
 
-    def simulate_endpoint(self, spot, T):
-        z = random.standard_normal(np.shape(spot))
-        return np.array(spot * np.exp((self.rf_rate - self.vol ** 2 / 2) * T + self.vol * np.sqrt(T) * z))
+    def put_delta(self, spot, strike, T):
+        d1 = (np.log(spot / strike) + (self.rf_rate + 0.5 * self.vol ** 2) * T) / (self.vol * np.sqrt(T))
+        return norm.cdf(d1) - 1
+
+    def straddle_price(self, spot, strike, T):
+        return self.call_price(spot, strike, T) + self.put_price(spot, strike, T)
+
+    def straddle_delta(self, spot, strike, T):
+        return self.call_delta(spot, strike, T) + self.put_delta(spot, strike, T)
 
     def simulate_data(self, n, min, max, option, vol=None, rf_rate=None):
         if vol is None:
@@ -109,14 +110,15 @@ class BlackScholes:
             rf_rate = self.rf_rate
 
         T = option.T
-        strike = option.strike
 
-        s0 = tf.sort(tf.random.uniform([n, 1], min, max, dtype=tf.float64), axis=0)
-        z = tf.random.normal([n, 1], dtype=tf.float64)
-        sT = s0 * tf.exp((rf_rate - vol ** 2 / 2.0) * tf.cast(T, tf.float64) + vol * tf.sqrt(tf.cast(T, tf.float64)) * z)
+        with tf.GradientTape() as tape:
+            s0 = tf.sort(tf.random.uniform([n, 1], min, max, dtype=tf.float64), axis=0)
+            tape.watch(s0)
+            z = tf.random.normal([n, 1], dtype=tf.float64)
+            sT = s0 * tf.exp((rf_rate - vol ** 2 / 2.0) * tf.cast(T, tf.float64) + vol * tf.sqrt(tf.cast(T, tf.float64)) * z)
+            payoff = option.payoff(sT)
 
-        payoff = option.payoff(sT)
-        Z = tf.cast(tf.where(sT > strike, 1.0, 0.0), tf.float64) * sT / s0
+        Z = tape.gradient(payoff, s0)
         '''
         s0 = np.sort(random.uniform(min, max, n)).reshape(-1, 1)
         z = random.standard_normal(n).reshape(-1, 1)
@@ -128,14 +130,17 @@ class BlackScholes:
         return np.array(s0), np.array(payoff), np.array(Z)
 
     @staticmethod
-    def simulate(n, min, max, strike, T, vol, rf_rate):
+    def simulate(n, min, max, option, vol, rf_rate):
+        T = option.T
 
-        s0 = np.sort(random.uniform(min, max, n)).reshape(-1, 1)
-        z = random.standard_normal(n).reshape(-1, 1)
-        sT = s0 * np.exp((rf_rate - vol ** 2 / 2) * T + vol * np.sqrt(T) * z)
+        with tf.GradientTape() as tape:
+            s0 = tf.sort(tf.random.uniform([n, 1], min, max, dtype=tf.float64), axis=0)
+            tape.watch(s0)
+            z = tf.random.normal([n, 1], dtype=tf.float64)
+            sT = s0 * tf.exp((rf_rate - vol ** 2 / 2.0) * tf.cast(T, tf.float64) + vol * tf.sqrt(tf.cast(T, tf.float64)) * z)
+            payoff = option.payoff(sT)
 
-        payoff = np.maximum(sT - strike, 0)
-        Z = np.where(sT > strike, 1, 0) * sT / s0
+        Z = tape.gradient(payoff, s0)
 
         return s0, payoff, Z
 

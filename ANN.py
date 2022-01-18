@@ -8,6 +8,8 @@ import time
 
 from models import BlackScholes
 from options import Call
+from options import Put
+from options import Straddle
 
 class ANN_reg_and_grad(keras.Model):
     def __init__(self, mean_, scale_, units=5, activation="softplus", **kwargs):
@@ -47,19 +49,17 @@ T = 0.5  # Time-to-maturity of basket option
 
 # Simulate BS dataset for training and testing
 t0 = time.time()
-call = Call(strike, T)
+option = Straddle(strike, T)
 BS = BlackScholes(rf_rate, vol)
-x, y, D = BS.simulate_data(n, 50, 150, call)
-# y = BS.price(x, strike, T)
-# y_delta = BS.delta(x, strike, T)
+x, y, D = BS.simulate_data(n, 50, 150, option)
 
-x_test, y_test, D_test = BS.simulate_data(n_test, 50, 150, call)
-y_test_delta = BS.delta(x_test, strike, T)
+x_test, y_test, D_test = BS.simulate_data(n_test, 50, 150, option)
+y_test_delta = BS.call_delta(x_test, strike, T)
 
-# index = np.random.randint(0, n, 4)
-# print("x\n", x[index])
-# print("y\n", y[index])
-# print("delta\n", D[index])
+index = np.random.randint(0, n, 4)
+print("x\n", x[index])
+print("y\n", y[index])
+print("delta\n", D[index])
 
 
 scaler = StandardScaler()
@@ -80,19 +80,19 @@ yhat, yhat_grad = model.predict(x_test)
 t1 = time.time()
 
 # index_test = np.random.randint(0, n_test, 4)
-# print("Predicted regression: \n {} \n Correct: \n {}".format(yhat[index_test], BS.price(x_test[index_test], strike, T)))
-# print("Predicted gradient: \n {} \n Correct: \n {}".format(yhat_grad[index_test], BS.delta(x_test[index_test], strike, T)))
+# print("Predicted regression: \n {} \n Correct: \n {}".format(yhat[index_test], BS.call_price(x_test[index_test], option)))
+# print("Predicted gradient: \n {} \n Correct: \n {}".format(yhat_grad[index_test], BS.call_delta(x_test[index_test], option)))
 print("Weight:", w)
 print("Training time: \n {}".format(t1-t0))
 
 plt.subplot(1, 2, 1)
 plt.scatter(x, y, alpha=0.1)
-plt.plot(x_test, BS.price(x_test, strike, T), linestyle='dotted', color='black')
+plt.plot(x_test, BS.straddle_price(x_test, strike, T), linestyle='dotted', color='black')
 plt.plot(x_test, yhat, color='red')
 
 plt.subplot(1, 2, 2)
 plt.scatter(x, D, alpha=0.1)
-plt.plot(x_test, BS.delta(x_test, strike, T), linestyle='dotted', color='black')
+plt.plot(x_test, BS.straddle_delta(x_test, strike, T), linestyle='dotted', color='black')
 plt.plot(x_test, yhat_grad, color='red')
 
 plt.show()
