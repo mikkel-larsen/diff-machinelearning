@@ -41,6 +41,7 @@ class PolyReg:
         D = np.transpose(np.transpose(powers)[:, :, np.newaxis] * np.transpose(self.X), axes=(0, 2, 1)) / \
             np.transpose(self.x[:, :, np.newaxis], axes=(1, 0, 2))
         D_t = np.transpose(D, axes=(0, 2, 1))
+        Z = np.transpose(Z[:, :, np.newaxis], axes=(1, 0, 2))
         p1 = np.dot(X_t, self.X) + lmbda * np.sum(np.matmul(D_t, D), axis=0)
         p2 = np.dot(X_t, self.y) + lmbda * np.sum(np.matmul(D_t, Z), axis=0)
         self.params = np.linalg.solve(p1, p2)
@@ -51,30 +52,31 @@ class PolyReg:
 n = 1000  # Number of samples
 n_test = 1000  # Number of samples for testing fit
 m = 5  # Number of stocks in the basket
-w = np.array([1/m for i in range(1, m+1)])  # Weight of individual stock in basket
+w = np.array([1/m for _ in range(m)])  # Weight of individual stock in basket
 strike = 100  # Strike of basket
 rf_rate = 0.02  # Risk-free rate (0 to easily simulate in the Bachelier model)
 vol = 50  # Volatility in the model
 cov = np.identity(m) * (vol ** 2)  # Covariance matrix governing stocks in basket
 basket_vol = np.sqrt(np.dot(np.transpose(w), np.dot(cov, w)))
-T = 0.5  # Time-to-maturity of basket option
+T = 0.3  # Time-to-maturity of basket option
+spot_rng = [50, 150]
 
 call = Call(strike, T)
 
 Bach = Bachelier(rf_rate, vol)  # Choice of model
-xpoints, xpoints_basket, ypoints, Z = Bachelier.simulate_basket(n, m, 50, 150, call, w, cov, rf_rate)  # Simulate needed data
-xpoints_test, xpoints_basket_test, ypoints_test, Z_test = Bachelier.simulate_basket(n_test, m, 50, 150, call, w, cov, rf_rate)  # Simulate test-data
+xpoints, xpoints_basket, ypoints, Z = Bach.simulate_basket(n, m, spot_rng, call, w, cov)  # Simulate needed data
+xpoints_test, xpoints_basket_test, ypoints_test, Z_test = Bach.simulate_basket(n_test, m, spot_rng, call, w, cov)  # Simulate test-data
 
-
-lmbda = np.dot(np.transpose(ypoints), ypoints) / np.dot(np.transpose(Z[0, :, :]), Z[0, :, :])  # Lambda for regularization, weighted by variation of term
+Z_perm = np.transpose(Z[:, :, np.newaxis], axes=(1, 0, 2))
+lmbda = np.dot(np.transpose(ypoints), ypoints) / np.dot(np.transpose(Z_perm[0, :, :]), Z_perm[0, :, :])  # Lambda for regularization, weighted by variation of term
 print("lambda: {}".format(lmbda))
 
 
-# Black-Scholes simulated data for regression of option option
+# Black-Scholes simulated data for regression of options
 vol = 0.20  # Volatility in the model (way lower in the Black-Scholes model)
 
 BS = BlackScholes(rf_rate, vol)
-xpoints_bs, ypoints_bs, D = BS.simulate_data(n, 50, 150, call)
+xpoints_bs, ypoints_bs, D = BS.simulate_data(n, spot_rng, call)
 
 lmbda_BS = np.mean(ypoints_bs ** 2) / np.mean(D ** 2)
 
