@@ -4,6 +4,7 @@ class Call:
     def __init__(self, strike, timetomat):
         self.strike = strike
         self.T = timetomat
+        self.is_simple = True
 
     @tf.function
     def payoff(self, spot):
@@ -13,6 +14,7 @@ class Put:
     def __init__(self, strike, timetomat):
         self.strike = strike
         self.T = timetomat
+        self.is_simple = True
 
     @tf.function
     def payoff(self, spot):
@@ -22,6 +24,7 @@ class Straddle:
     def __init__(self, strike, timetomat):
         self.strike = strike
         self.T = timetomat
+        self.is_simple = True
 
     @tf.function
     def payoff(self, spot):

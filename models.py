@@ -161,7 +161,6 @@ class BlackScholes:
 
         spots = np.zeros((n, end))
         spots[:, 0] = random.uniform(spot_min, spot_max, n)
-
         z = random.standard_normal((n, end))
         dt_sqrt = np.sqrt(dt)
         for i in range(1, end):
@@ -181,22 +180,45 @@ class BlackScholes:
             spot_min = rng
             spot_max = rng
 
-        with tf.GradientTape() as tape:
-            s0 = tf.sort(tf.random.uniform([n, 1], spot_min, spot_max, dtype=tf.float64), axis=0)
-            tape.watch(s0)
-            z = tf.random.normal([n, 1], dtype=tf.float64)
-            sT = s0 * tf.exp((self.rf_rate - self.vol ** 2 / 2.0) * tf.cast(T, tf.float64) + self.vol * tf.sqrt(tf.cast(T, tf.float64)) * z)
-            payoff = option.payoff(sT)
+        simple = False
+        if hasattr(option, 'is_simple'):
+            if option.is_simple:
+                simple = True
 
-        Z = tape.gradient(payoff, s0)
-        '''
-        s0 = np.sort(random.uniform(spot_min, spot_max, n)).reshape(-1, 1)
-        z = random.standard_normal(n).reshape(-1, 1)
-        sT = s0 * np.exp((rf_rate - vol ** 2 / 2) * T + vol * np.sqrt(T) * z)
+        if simple:
+            with tf.GradientTape() as tape:
+                s0 = tf.sort(tf.random.uniform([n, 1], spot_min, spot_max, dtype=tf.float64), axis=0)
+                tape.watch(s0)
+                z = tf.random.normal([n, 1], dtype=tf.float64)
+                sT = s0 * tf.exp((self.rf_rate - self.vol ** 2 / 2.0) * tf.cast(T, tf.float64) +
+                                 self.vol * tf.sqrt(tf.cast(T, tf.float64)) * z)
+                payoff = option.payoff(sT)
+            Z = tape.gradient(payoff, s0)
+        else:
+            if T < 1:
+                end = 252  # Update 252 times (default)
+                dt = T / 252
+            else:
+                end = int(T * 252)  # Update once every day (default)
+                dt = 1 / 252
 
-        payoff = np.maximum(sT - strike, 0)
-        Z = np.where(sT > strike, 1, 0) * sT / s0
-        '''
+            with tf.GradientTape() as tape:
+                s0 = tf.sort(tf.random.uniform([1, n], spot_min, spot_max, dtype=tf.float64), axis=0)
+                tape.watch(s0)
+                z = random.standard_normal((n, end))
+                dt_sqrt = np.sqrt(dt)
+                sT = s0
+                price_path = [sT]
+                for i in range(end):
+                    sT += sT * (self.rf_rate * dt + self.vol * dt_sqrt * z[:, i])
+                    price_path.append(sT)
+
+                payoff = option.payoff(price_path)
+            Z = tape.gradient(payoff, s0)
+            s0 = tf.reshape(s0, (-1, 1))
+            payoff = tf.reshape(payoff, (-1, 1))
+            Z = tf.reshape(Z, (-1, 1))
+
         return np.array(s0), np.array(payoff), np.array(Z)
 
     @staticmethod
