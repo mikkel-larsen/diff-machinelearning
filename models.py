@@ -1,7 +1,139 @@
 import numpy as np
 from numpy import random
 from scipy.stats import norm
+from scipy.stats import multivariate_normal
 import tensorflow as tf
+
+
+class EulerScheme:  # Abstract base class for different models
+    def cache_dt(self):
+        # Initialize stuff that do not need to be
+        pass  # calculated in every iteration of euler scheme
+
+    def update_price_path(self, *args):
+        raise NotImplementedError  # A single euler step
+
+class Bachelier_eulerScheme(EulerScheme):
+    def __init__(self, rf_rate, vol):
+        self.const = None
+        self.dt = None
+        self.dt_sqrt = None
+        self.rf_rate = rf_rate
+        self.vol = vol
+
+    def cache_dt(self, dt):
+        self.dt = dt
+        self.dt_sqrt = np.sqrt(dt)
+        self.const = 1 + self.rf_rate * self.dt
+
+    def update_price_path(self, s0, *args):
+        shape = np.shape(s0)
+        if type(self.vol) is not list and type(self.vol) is not np.ndarray:
+            z = multivariate_normal(np.zeros(shape[1]), self.vol ** 2).rvs(size=shape[0]).reshape(shape)
+        else:
+            z = multivariate_normal(np.zeros(shape[1]), self.vol).rvs(size=shape[0]).reshape(shape)
+
+        return s0 * self.const + self.dt_sqrt * z
+
+class BlackScholes_eulerScheme(EulerScheme):
+    def __init__(self, rf_rate, vol):
+        self.const = None
+        self.dt = None
+        self.dt_sqrt = None
+        self.rf_rate = rf_rate
+        self.vol = vol
+
+    def cache_dt(self, dt):
+        self.dt = dt
+        self.dt_sqrt = np.sqrt(dt)
+        self.const = 1 + self.rf_rate * self.dt
+
+    def simulate_endpoint(self, s0, T):
+        shape = np.shape(s0)
+        if type(self.vol) is not list and type(self.vol) is not np.ndarray:
+            var = self.vol ** 2
+            z = multivariate_normal(np.zeros(shape[1]), var).rvs(size=shape[0]).reshape(shape)
+        else:
+            var = np.diag(self.vol)
+            z = multivariate_normal(np.zeros(shape[1]), self.vol).rvs(size=shape[0]).reshape(shape)
+
+        return s0 * np.exp((self.rf_rate - var / 2.0) * T + np.sqrt(T) * z)
+
+    def update_price_path(self, s0, *args):
+        shape = np.shape(s0)
+        if type(self.vol) is not list and type(self.vol) is not np.ndarray:
+            z = multivariate_normal(np.zeros(shape[1]), self.vol ** 2).rvs(size=shape[0]).reshape(shape)
+        else:
+            z = multivariate_normal(np.zeros(shape[1]), self.vol).rvs(size=shape[0]).reshape(shape)
+
+        return s0 * (self.const + self.dt_sqrt * z)
+
+def simulate_data(n, rng, option, model, seed=None):
+    if seed is not None:
+        tf.random.set_seed(seed)  # Possibility of setting seed for reproducibility
+
+    if type(n) is not list and type(n) is not np.ndarray:
+        n = [n, 1]  # Failsafe: random number generators takes lists as input
+
+    if np.size(rng) == 2:  # Randomly generate spots in given range
+        spot_min, spot_max = rng
+    else:
+        spot_min = rng  # If only a single number is given all spots will start here
+        spot_max = rng
+
+    is_simple = False  # Check if derivative is simple (and vocal about it)
+    if hasattr(option, 'is_simple'):
+        if option.is_simple:
+            is_simple = True
+
+    T = option.T
+
+    if is_simple and hasattr(model, 'simulate_endpoint'):  # Skip euler steps if possible
+        with tf.GradientTape() as tape:
+            # Randomly select spots
+            # s0 = tf.sort(tf.random.uniform(n, spot_min, spot_max, dtype=tf.float64), axis=0)
+            s0 = tf.random.uniform(n, spot_min, spot_max, dtype=tf.float64)
+            tape.watch(s0)  # Spots are not tf.Variables, we tell tf to track anyway
+            sT = model.simulate_endpoint(s0, T)
+            payoff = option.payoff(sT)
+        Z = tape.gradient(payoff, s0)
+    else:
+        if T < 1:
+            end = 252  # Update 252 times
+            dt = T / 252
+        else:
+            end = int(T * 252)  # Update once every day
+            dt = 1 / 252
+
+        # Initialize constants that do not need to be
+        model.cache_dt(dt)  # recalculated for every iteration in euler scheme update
+
+        with tf.GradientTape() as tape:
+            # Randomly select spots
+            # s0 = tf.sort(tf.random.uniform(n, spot_min, spot_max, dtype=tf.float64), axis=0)
+            s0 = tf.random.uniform(n, spot_min, spot_max, dtype=tf.float64)
+            tape.watch(s0)  # Spots are not tf.Variables, we tell tf to track anyway
+            st = s0
+            price_path = [st]  # List to hold price-path
+            for _ in range(end):
+                st = model.update_price_path(st, dt)  # Update with single euler step
+                price_path.append(st)  # Add to price-path
+
+            if is_simple:  # Find payoff
+                payoff = option.payoff(price_path[-1])
+            else:
+                payoff = option.payoff(price_path)
+
+        # Get gradient of payoff w.r.t. spot (s0)
+        Z = tape.gradient(payoff, s0)
+
+        #s0 = tf.reshape(s0, n)
+        payoff = tf.reshape(payoff, (n[0], -1))
+        #Z = tf.reshape(Z, (shape[0], -1))
+
+    return np.array(s0), np.array(payoff), np.array(Z)
+
+# ------ HELPER FUNCTIONS ------
 
 class Bachelier:
     def __init__(self, rf_rate=0.0, vol=None):

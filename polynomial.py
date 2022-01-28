@@ -2,9 +2,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.preprocessing import PolynomialFeatures
 
-from models import Bachelier
-from models import BlackScholes
-from options import Call
+from models import Bachelier, BlackScholes, Bachelier_eulerScheme, BlackScholes_eulerScheme, simulate_data
+from options import Call, Call_basket
 
 class PolyReg:
     def __init__(self, x, y, p):
@@ -54,7 +53,7 @@ n_test = 1000  # Number of samples for testing fit
 m = 5  # Number of stocks in the basket
 w = np.array([1/m for _ in range(m)])  # Weight of individual stock in basket
 strike = 100  # Strike of basket
-rf_rate = 0.02  # Risk-free rate (0 to easily simulate in the Bachelier model)
+rf_rate = 0.0  # Risk-free rate (0 to easily simulate in the Bachelier model)
 vol = 50  # Volatility in the model
 cov = np.identity(m) * (vol ** 2)  # Covariance matrix governing stocks in basket
 basket_vol = np.sqrt(np.dot(np.transpose(w), np.dot(cov, w)))
@@ -62,10 +61,16 @@ T = 0.3  # Time-to-maturity of basket option
 spot_rng = [50, 150]
 
 call = Call(strike, T)
+basket = Call_basket(strike, T, w)
 
-Bach = Bachelier(rf_rate, vol)  # Choice of model
-xpoints, xpoints_basket, ypoints, Z = Bach.simulate_basket(n, m, spot_rng, call, w, cov)  # Simulate needed data
-xpoints_test, xpoints_basket_test, ypoints_test, Z_test = Bach.simulate_basket(n_test, m, spot_rng, call, w, cov)  # Simulate test-data
+Bach = Bachelier(rf_rate, vol)  # Helper for analytic price etc.
+Bach_model = Bachelier_eulerScheme(rf_rate, cov)
+
+xpoints, ypoints, Z = simulate_data([n, m], spot_rng, basket, Bach_model)
+xpoints_basket = np.reshape(xpoints @ w.T, (-1, 1))
+
+xpoints_test, ypoints_test, Z_test = simulate_data([n_test, m], spot_rng, basket, Bach_model)
+xpoints_basket_test = np.reshape(xpoints_test @ w.T, (-1, 1))
 
 Z_perm = np.transpose(Z[:, :, np.newaxis], axes=(1, 0, 2))
 lmbda = np.dot(np.transpose(ypoints), ypoints) / np.dot(np.transpose(Z_perm[0, :, :]), Z_perm[0, :, :])  # Lambda for regularization, weighted by variation of term
@@ -74,9 +79,16 @@ print("lambda: {}".format(lmbda))
 
 # Black-Scholes simulated data for regression of options
 vol = 0.20  # Volatility in the model (way lower in the Black-Scholes model)
+rf_rate = 0.02  # Risk-free rate (0 to easily simulate in the Bachelier model)
 
-BS = BlackScholes(rf_rate, vol)
-xpoints_bs, ypoints_bs, D = BS.simulate_data(n, spot_rng, call)
+BS = BlackScholes(rf_rate, vol)  # Helper for analytic price etc.
+BS_model = BlackScholes_eulerScheme(rf_rate, vol)
+xpoints_bs, ypoints_bs, D = simulate_data(n, spot_rng, call, BS_model)
+
+order = np.argsort(xpoints_bs, axis=0).flatten()
+xpoints_bs = xpoints_bs[order]
+ypoints_bs = ypoints_bs[order]
+D = D[order]
 
 lmbda_BS = np.mean(ypoints_bs ** 2) / np.mean(D ** 2)
 
@@ -144,22 +156,22 @@ plt.show()
 # Classic polynomial regression
 plt.subplot(3, 1, 1)
 plt.scatter(xpoints_basket, ypoints, alpha=0.1, s=20)
+plt.plot(xpoints_basket_test, Bach.call_price(xpoints_basket_test, strike, T, basket_vol), color='green', linestyle='none', marker='x', ms=3, mew=0.5, alpha=0.4)
 plt.plot(xpoints_basket_test, poly.predict(xpoints_test), color='red', alpha=0.4, marker="x", ls='none', ms=3, mew=0.5)
-plt.plot(xpoints_basket_test, Bach.call_price(xpoints_basket_test, strike, T, basket_vol), color='green', linestyle='dotted')
 plt.ylim(-5, 50)
 
 # Polynomial regression with L2-regularization
 plt.subplot(3, 1, 2)
 plt.scatter(xpoints_basket, ypoints, alpha=0.1, s=20)
+plt.plot(xpoints_basket_test, Bach.call_price(xpoints_basket_test, strike, T, basket_vol), color='green', linestyle='none', marker='x', ms=3, mew=0.5, alpha=0.4)
 plt.plot(xpoints_basket_test, poly_l2reg.predict(xpoints_test), color='red', alpha=0.4, marker="x", ls='none', ms=3, mew=0.5)
-plt.plot(xpoints_basket_test, Bach.call_price(xpoints_basket_test, strike, T, basket_vol), color='green', linestyle='dotted')
 plt.ylim(-5, 50)
 
 # Polynomial regression with differential regularization
 plt.subplot(3, 1, 3)
 plt.scatter(xpoints_basket, ypoints, alpha=0.1, s=20)
+plt.plot(xpoints_basket_test, Bach.call_price(xpoints_basket_test, strike, T, basket_vol), color='green', linestyle='none', marker='x', ms=3, mew=0.5, alpha=0.4)
 plt.plot(xpoints_basket_test, poly_dreg.predict(xpoints_test), color='red', alpha=0.4, marker="x", ls='none', ms=3, mew=0.5)
-plt.plot(xpoints_basket_test, Bach.call_price(xpoints_basket_test, strike, T, basket_vol), color='green', linestyle='dotted')
 plt.ylim(-5, 50)
 
 # plt.savefig('foo.png', dpi=1000, bbox_inches='tight')

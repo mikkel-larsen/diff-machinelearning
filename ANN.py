@@ -1,3 +1,5 @@
+from abc import ABC
+
 import tensorflow as tf
 import numpy as np
 import tensorflow.keras as keras
@@ -6,13 +8,10 @@ import matplotlib.pyplot as plt
 from sklearn.preprocessing import StandardScaler
 import time
 
-from models import BlackScholes
-from models import Bachelier
-from options import Call
-from options import Put
-from options import Straddle
+from models import BlackScholes, Bachelier, Bachelier_eulerScheme, simulate_data
+from options import Call, Call_basket
 
-class create_diffANN(keras.Model):
+class create_diffANN(keras.Model, ABC):
     def __init__(self, mean_, scale_, units=5, activation="softplus", seed=None, **kwargs):
         super().__init__(**kwargs)
         self.mean_ = mean_
@@ -37,7 +36,7 @@ class create_diffANN(keras.Model):
         grad_output = tape.gradient(reg_output, inputs)
         return reg_output, grad_output
 
-class create_ANN(keras.Model):
+class create_ANN(keras.Model, ABC):
     def __init__(self, mean_, scale_, units=5, activation="softplus", seed=None, **kwargs):
         super().__init__(**kwargs)
         self.mean_ = mean_
@@ -118,13 +117,17 @@ basket_vol = np.sqrt(np.dot(np.transpose(w), np.dot(cov, w)))
 
 # Simulate datasets for training and testing
 option = Call(strike, T)
+basket = Call_basket(strike, T, w)
 Bach = Bachelier(rf_rate, basket_vol)
 BS = BlackScholes(rf_rate, vol_bs)
-# x, y, D = BS.simulate_data(n, spot_rng, option)  # Black-Scholes data
-x, b, y, D = Bach.simulate_basket(n, m, spot_rng, option, w, cov)  # Bachelier data
 
-# x_test, y_test, D_test = BS.simulate_data(n_test, spot_rng, option)  # Black-Scholes test data
-x_test, b_test, y_test, D_test = Bach.simulate_basket(n_test, m, spot_rng, option, w, cov)  # Bachelier test data
+model = Bachelier_eulerScheme(rf_rate, cov)
+
+x, y, D = simulate_data([n, m], spot_rng, basket, model)
+b = np.reshape(x @ w.T, (-1, 1))
+
+x_test, y_test, D_test = simulate_data([n_test, m], spot_rng, basket, model)
+b_test = np.reshape(x_test @ w.T, (-1, 1))
 
 # Create, fit and time models
 t0 = time.time()
@@ -179,23 +182,23 @@ plt.show()
 plt.subplot(2, 2, 1)
 plt.scatter(b, y, alpha=0.1)
 plt.plot(b_test, yhat_diff, color='red', alpha=0.4, marker="x", ls='none', ms=3, mew=0.5)
-plt.plot(b_test, Bach.call_price(b_test, strike, T), color='green', linestyle='dotted')
+plt.plot(b_test, Bach.call_price(b_test, strike, T), color='green', alpha=0.4, marker="x", ls='none', ms=3, mew=0.5)
 plt.text(60, 80, "{} sec".format(np.round(training_time_diff, 2)), horizontalalignment='left', verticalalignment='center', fontsize=8)
 
 plt.subplot(2, 2, 2)
 plt.scatter(b, D[:, 0], alpha=0.1)
 plt.plot(b_test, yhat_diff_grad[:, 0], color='red', alpha=0.4, marker="x", ls='none', ms=3, mew=0.5)
-plt.plot(b_test, Bach.call_delta(b_test, strike, T) / m, color='green', linestyle='dotted')
+plt.plot(b_test, Bach.call_delta(b_test, strike, T) / m, color='green', alpha=0.4, marker="x", ls='none', ms=3, mew=0.5)
 
 plt.subplot(2, 2, 3)
 plt.scatter(b, y, alpha=0.1)
 plt.plot(b_test, yhat, color='red', alpha=0.4, marker="x", ls='none', ms=3, mew=0.5)
-plt.plot(b_test, Bach.call_price(b_test, strike, T), color='green', linestyle='dotted')
+plt.plot(b_test, Bach.call_price(b_test, strike, T), color='green', alpha=0.4, marker="x", ls='none', ms=3, mew=0.5)
 plt.text(60, 80, "{} sec".format(np.round(training_time, 2)), horizontalalignment='left', verticalalignment='center', fontsize=8)
 
 plt.subplot(2, 2, 4)
 plt.scatter(b, D[:, 0], alpha=0.1)
 plt.plot(b_test, yhat_grad[:, 0], color='red', alpha=0.4, marker="x", ls='none', ms=3, mew=0.5)
-plt.plot(b_test, Bach.call_delta(b_test, strike, T) / m, color='green', linestyle='dotted')
+plt.plot(b_test, Bach.call_delta(b_test, strike, T) / m, color='green', alpha=0.4, marker="x", ls='none', ms=3, mew=0.5)
 
 plt.show()
