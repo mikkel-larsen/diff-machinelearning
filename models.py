@@ -6,71 +6,99 @@ import tensorflow as tf
 
 
 class EulerScheme:  # Abstract base class for different models
-    def cache_dt(self):
-        # Initialize stuff that do not need to be
-        pass  # calculated in every iteration of euler scheme
+    def initialize(self, **kwargs):
+        # Initialize stuff that do not need to be ..
+        pass  # .. calculated in every iteration of euler scheme
 
     def update_price_path(self, *args):
         raise NotImplementedError  # A single euler step
 
 class Bachelier_eulerScheme(EulerScheme):
-    def __init__(self, rf_rate, vol):
+    def __init__(self, rf_rate, vol, antithetic=True):
         self.const = None
         self.dt = None
         self.dt_sqrt = None
+        self.gen = None
+        self.n = None
+        self.m = None
+        self.antithetic = antithetic
         self.rf_rate = rf_rate
         self.vol = vol
 
-    def cache_dt(self, dt):
-        self.dt = dt
-        self.dt_sqrt = np.sqrt(dt)
+    def initialize(self, **kwargs):
+        self.dt = kwargs['dt']
+        self.dt_sqrt = np.sqrt(self.dt)
         self.const = 1 + self.rf_rate * self.dt
+        self.n, self.m = np.shape(kwargs['s0'])
+        if self.antithetic:
+            self.n = int(self.n / 2)
+        if type(self.vol) is not list and type(self.vol) is not np.ndarray:
+            self.gen = multivariate_normal(np.zeros(self.m), self.vol ** 2)
+        else:
+            self.gen = multivariate_normal(np.zeros(self.m), self.vol)
 
     def update_price_path(self, s0, *args):
-        shape = np.shape(s0)
-        if type(self.vol) is not list and type(self.vol) is not np.ndarray:
-            z = multivariate_normal(np.zeros(shape[1]), self.vol ** 2).rvs(size=shape[0]).reshape(shape)
-        else:
-            z = multivariate_normal(np.zeros(shape[1]), self.vol).rvs(size=shape[0]).reshape(shape)
-
+        z = self.gen.rvs(size=self.n).reshape((self.n, self.m))
+        if self.antithetic:
+            z = np.row_stack((z, -z))
         return s0 * self.const + self.dt_sqrt * z
 
 class BlackScholes_eulerScheme(EulerScheme):
-    def __init__(self, rf_rate, vol):
+    def __init__(self, rf_rate, vol, antithetic=True):
         self.const = None
         self.dt = None
         self.dt_sqrt = None
+        self.gen = None
+        self.n = None
+        self.m = None
+        self.var = None
+        self.antithetic = antithetic
         self.rf_rate = rf_rate
         self.vol = vol
 
-    def cache_dt(self, dt):
-        self.dt = dt
-        self.dt_sqrt = np.sqrt(dt)
+    def initialize(self, **kwargs):
+        self.dt = kwargs['dt']
+        self.dt_sqrt = np.sqrt(self.dt)
         self.const = 1 + self.rf_rate * self.dt
+        self.n, self.m = np.shape(kwargs['s0'])
+        if self.antithetic:
+            self.n = int(self.n / 2)
+        if type(self.vol) is not list and type(self.vol) is not np.ndarray:
+            self.var = self.vol ** 2
+            self.gen = multivariate_normal(np.zeros(self.m), self.var)
+        else:
+            self.var = np.diag(self.vol)
+            self.gen = multivariate_normal(np.zeros(self.m), self.vol)
 
     def simulate_endpoint(self, s0, T):
         shape = np.shape(s0)
+        n, m = shape
+        if self.antithetic:
+            n = int(n/2)
+
         if type(self.vol) is not list and type(self.vol) is not np.ndarray:
             var = self.vol ** 2
-            z = multivariate_normal(np.zeros(shape[1]), var).rvs(size=shape[0]).reshape(shape)
+            z = multivariate_normal(np.zeros(m), var).rvs(size=n).reshape((n, m))
         else:
             var = np.diag(self.vol)
-            z = multivariate_normal(np.zeros(shape[1]), self.vol).rvs(size=shape[0]).reshape(shape)
+            z = multivariate_normal(np.zeros(m), self.vol).rvs(size=n).reshape((n, m))
+
+        if self.antithetic:
+            z = np.row_stack((z, -z))
 
         return s0 * np.exp((self.rf_rate - var / 2.0) * T + np.sqrt(T) * z)
 
     def update_price_path(self, s0, *args):
-        shape = np.shape(s0)
-        if type(self.vol) is not list and type(self.vol) is not np.ndarray:
-            z = multivariate_normal(np.zeros(shape[1]), self.vol ** 2).rvs(size=shape[0]).reshape(shape)
-        else:
-            z = multivariate_normal(np.zeros(shape[1]), self.vol).rvs(size=shape[0]).reshape(shape)
+        z = self.gen.rvs(size=self.n).reshape((self.n, self.m))
+        if self.antithetic:
+            z = np.row_stack((z, -z))
 
         return s0 * (self.const + self.dt_sqrt * z)
 
 def simulate_data(n, rng, option, model, seed=None):
-    if seed is not None:
-        tf.random.set_seed(seed)  # Possibility of setting seed for reproducibility
+    if seed is not None:  # Possibility of setting seed for reproducibility
+        tf.random.set_seed(seed)
+        np.random.seed(seed)
 
     if type(n) is not list and type(n) is not np.ndarray:
         n = [n, 1]  # Failsafe: random number generators takes lists as input
@@ -90,9 +118,7 @@ def simulate_data(n, rng, option, model, seed=None):
 
     if is_simple and hasattr(model, 'simulate_endpoint'):  # Skip euler steps if possible
         with tf.GradientTape() as tape:
-            # Randomly select spots
-            # s0 = tf.sort(tf.random.uniform(n, spot_min, spot_max, dtype=tf.float64), axis=0)
-            s0 = tf.random.uniform(n, spot_min, spot_max, dtype=tf.float64)
+            s0 = tf.random.uniform(n, spot_min, spot_max, dtype=tf.float64)  # Randomly select spots
             tape.watch(s0)  # Spots are not tf.Variables, we tell tf to track anyway
             sT = model.simulate_endpoint(s0, T)
             payoff = option.payoff(sT)
@@ -105,14 +131,11 @@ def simulate_data(n, rng, option, model, seed=None):
             end = int(T * 252)  # Update once every day
             dt = 1 / 252
 
-        # Initialize constants that do not need to be
-        model.cache_dt(dt)  # recalculated for every iteration in euler scheme update
-
         with tf.GradientTape() as tape:
-            # Randomly select spots
-            # s0 = tf.sort(tf.random.uniform(n, spot_min, spot_max, dtype=tf.float64), axis=0)
-            s0 = tf.random.uniform(n, spot_min, spot_max, dtype=tf.float64)
+            s0 = tf.random.uniform(n, spot_min, spot_max, dtype=tf.float64)  # Randomly select spots
             tape.watch(s0)  # Spots are not tf.Variables, we tell tf to track anyway
+            # Initialize constants that do not need to be recalculated for every ..
+            model.initialize(dt=dt, s0=s0, T=T, end=end, n=n)  # .. iteration in euler scheme update
             st = s0
             price_path = [st]  # List to hold price-path
             for _ in range(end):
@@ -133,7 +156,7 @@ def simulate_data(n, rng, option, model, seed=None):
 
     return np.array(s0), np.array(payoff), np.array(Z)
 
-# ------ HELPER FUNCTIONS ------
+# ------ HELPER FUNCTIONS -----------------------------------------------------------
 
 class Bachelier:
     def __init__(self, rf_rate=0.0, vol=None):
