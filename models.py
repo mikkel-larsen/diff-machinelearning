@@ -2,19 +2,22 @@ import numpy as np
 from numpy import random
 from scipy.stats import norm
 from scipy.stats import multivariate_normal
+from scipy.stats.qmc import MultivariateNormalQMC
 import tensorflow as tf
 
 
 class EulerScheme:  # Abstract base class for different models
     def initialize(self, **kwargs):
-        # Initialize stuff that do not need to be ..
-        pass  # .. calculated in every iteration of euler scheme
+        # Initialize stuff that do not need to be
+        # calculated in every iteration of euler scheme
+        pass
 
-    def update_price_path(self, *args):
+    def update_price_path(self, **kwargs):
         raise NotImplementedError  # A single euler step
 
+
 class Bachelier_eulerScheme(EulerScheme):
-    def __init__(self, rf_rate, vol, antithetic=True):
+    def __init__(self, rf_rate, var, antithetic=True):
         self.const = None
         self.dt = None
         self.dt_sqrt = None
@@ -23,7 +26,7 @@ class Bachelier_eulerScheme(EulerScheme):
         self.m = None
         self.antithetic = antithetic
         self.rf_rate = rf_rate
-        self.vol = vol
+        self.var = var
 
     def initialize(self, **kwargs):
         self.dt = kwargs['dt']
@@ -32,68 +35,125 @@ class Bachelier_eulerScheme(EulerScheme):
         self.n, self.m = np.shape(kwargs['s0'])
         if self.antithetic:
             self.n = int(self.n / 2)
-        if type(self.vol) is not list and type(self.vol) is not np.ndarray:
-            self.gen = multivariate_normal(np.zeros(self.m), self.vol ** 2)
-        else:
-            self.gen = multivariate_normal(np.zeros(self.m), self.vol)
+        self.gen = multivariate_normal(np.zeros(self.m), self.var)
 
-    def update_price_path(self, s0, *args):
+    def update_price_path(self, s0, **kwargs):
         z = self.gen.rvs(size=self.n).reshape((self.n, self.m))
         if self.antithetic:
             z = np.row_stack((z, -z))
         return s0 * self.const + self.dt_sqrt * z
 
+
 class BlackScholes_eulerScheme(EulerScheme):
-    def __init__(self, rf_rate, vol, antithetic=True):
+    def __init__(self, rf_rate, var, antithetic=True, quasi_mc=False):
         self.const = None
         self.dt = None
         self.dt_sqrt = None
         self.gen = None
         self.n = None
         self.m = None
-        self.var = None
-        self.antithetic = antithetic
+        self.perm = None
+        self.shuffler = None
         self.rf_rate = rf_rate
-        self.vol = vol
+        self.var = var
+        self.var_diag = None
+        self.antithetic = antithetic
+        self.quasi_mc = quasi_mc
 
     def initialize(self, **kwargs):
         self.dt = kwargs['dt']
         self.dt_sqrt = np.sqrt(self.dt)
         self.const = 1 + self.rf_rate * self.dt
         self.n, self.m = np.shape(kwargs['s0'])
-        if self.antithetic:
+
+        if self.quasi_mc:
+            self.gen = MultivariateNormalQMC(np.zeros(self.m), self.var)
+            self.perm = np.arange(self.n)
+            self.shuffler = np.random.default_rng()
+        elif self.antithetic:
             self.n = int(self.n / 2)
-        if type(self.vol) is not list and type(self.vol) is not np.ndarray:
-            self.var = self.vol ** 2
             self.gen = multivariate_normal(np.zeros(self.m), self.var)
         else:
-            self.var = np.diag(self.vol)
-            self.gen = multivariate_normal(np.zeros(self.m), self.vol)
+            self.gen = multivariate_normal(np.zeros(self.m), self.var)
 
     def simulate_endpoint(self, s0, T):
         shape = np.shape(s0)
         n, m = shape
-        if self.antithetic:
-            n = int(n/2)
 
-        if type(self.vol) is not list and type(self.vol) is not np.ndarray:
-            var = self.vol ** 2
-            z = multivariate_normal(np.zeros(m), var).rvs(size=n).reshape((n, m))
+        if self.quasi_mc:
+            z = MultivariateNormalQMC(np.zeros(m), self.var).random(n).reshape((n, m))
+        elif self.antithetic:
+            n = int(n / 2)
+            z = multivariate_normal(np.zeros(m), self.var).rvs(size=n).reshape((n, m))
+            z = np.row_stack((z, -z))
         else:
-            var = np.diag(self.vol)
-            z = multivariate_normal(np.zeros(m), self.vol).rvs(size=n).reshape((n, m))
+            z = multivariate_normal(np.zeros(m), self.var).rvs(size=n).reshape((n, m))
 
-        if self.antithetic:
+        if type(self.var) is not list and type(self.var) is not np.ndarray:
+            var_diag = self.var
+        else:
+            var_diag = np.diag(self.var)
+
+        return s0 * np.exp((self.rf_rate - var_diag / 2.0) * T + np.sqrt(T) * z)
+
+    def update_price_path(self, s0, **kwargs):
+        if self.quasi_mc:
+            z = self.gen.random(self.n).reshape((self.n, self.m))
+            self.shuffler.shuffle(self.perm)
+            z = z[self.perm]
+        elif self.antithetic:
+            z = self.gen.rvs(size=self.n).reshape((self.n, self.m))
             z = np.row_stack((z, -z))
-
-        return s0 * np.exp((self.rf_rate - var / 2.0) * T + np.sqrt(T) * z)
-
-    def update_price_path(self, s0, *args):
-        z = self.gen.rvs(size=self.n).reshape((self.n, self.m))
-        if self.antithetic:
-            z = np.row_stack((z, -z))
+        else:
+            z = self.gen.rvs(size=self.n).reshape((self.n, self.m))
 
         return s0 * (self.const + self.dt_sqrt * z)
+
+
+class Vasicek_eulerScheme(EulerScheme):
+    def __init__(self, a, b, var, antithetic=False, quasi_mc=False):
+        self.const = None
+        self.dt = None
+        self.dt_sqrt = None
+        self.gen = None
+        self.n = None
+        self.m = None
+        self.perm = None
+        self.shuffler = None
+        self.a = a
+        self.b = b
+        self.var = var
+        self.antithetic = antithetic
+        self.quasi_mc = quasi_mc
+
+    def initialize(self, **kwargs):
+        self.dt = kwargs['dt']
+        self.dt_sqrt = np.sqrt(self.dt)
+        self.n, self.m = np.shape(kwargs['s0'])
+
+        if self.quasi_mc:
+            self.gen = MultivariateNormalQMC(np.zeros(self.m), self.var)
+            self.perm = np.arange(self.n)
+            self.shuffler = np.random.default_rng()
+        elif self.antithetic:
+            self.n = int(self.n / 2)
+            self.gen = multivariate_normal(np.zeros(self.m), self.var)
+        else:
+            self.gen = multivariate_normal(np.zeros(self.m), self.var)
+
+    def update_price_path(self, s0, **kwargs):
+        if self.quasi_mc:
+            z = self.gen.random(self.n).reshape((self.n, self.m))
+            self.shuffler.shuffle(self.perm)
+            z = z[self.perm]
+        elif self.antithetic:
+            z = self.gen.rvs(size=self.n).reshape((self.n, self.m))
+            z = np.row_stack((z, -z))
+        else:
+            z = self.gen.rvs(size=self.n).reshape((self.n, self.m))
+
+        return s0 + self.a * (self.b - s0) * self.dt + self.dt_sqrt * z
+
 
 def simulate_data(n, rng, option, model, seed=None):
     if seed is not None:  # Possibility of setting seed for reproducibility
@@ -118,7 +178,7 @@ def simulate_data(n, rng, option, model, seed=None):
 
     if is_simple and hasattr(model, 'simulate_endpoint'):  # Skip euler steps if possible
         with tf.GradientTape() as tape:
-            s0 = tf.random.uniform(n, spot_min, spot_max, dtype=tf.float64)  # Randomly select spots
+            s0 = tf.random.uniform(n, spot_min, spot_max, dtype=tf.float32)  # Randomly select spots
             tape.watch(s0)  # Spots are not tf.Variables, we tell tf to track anyway
             sT = model.simulate_endpoint(s0, T)
             payoff = option.payoff(sT)
@@ -131,15 +191,18 @@ def simulate_data(n, rng, option, model, seed=None):
             end = int(T * 252)  # Update once every day
             dt = 1 / 252
 
+        if hasattr(option, 'initialize'):
+            option.initialize(dt=dt, end=end, T=T, n=n)
+
+        s0 = tf.random.uniform(n, spot_min, spot_max, dtype=tf.float32)  # Randomly select spots
+        # Initialize constants that do not need to be recalculated for every ..
+        model.initialize(dt=dt, s0=s0, T=T, end=end, n=n)  # .. iteration in euler scheme update
         with tf.GradientTape() as tape:
-            s0 = tf.random.uniform(n, spot_min, spot_max, dtype=tf.float64)  # Randomly select spots
             tape.watch(s0)  # Spots are not tf.Variables, we tell tf to track anyway
-            # Initialize constants that do not need to be recalculated for every ..
-            model.initialize(dt=dt, s0=s0, T=T, end=end, n=n)  # .. iteration in euler scheme update
             st = s0
             price_path = [st]  # List to hold price-path
             for _ in range(end):
-                st = model.update_price_path(st, dt)  # Update with single euler step
+                st = model.update_price_path(st, dt=dt)  # Update with single euler step
                 price_path.append(st)  # Add to price-path
 
             if is_simple:  # Find payoff
@@ -149,16 +212,14 @@ def simulate_data(n, rng, option, model, seed=None):
 
         # Get gradient of payoff w.r.t. spot (s0)
         Z = tape.gradient(payoff, s0)
-
-        #s0 = tf.reshape(s0, n)
         payoff = tf.reshape(payoff, (n[0], -1))
-        #Z = tf.reshape(Z, (shape[0], -1))
 
-    return np.array(s0), np.array(payoff), np.array(Z)
+    return np.array(s0, copy=False), np.array(payoff, copy=False), np.array(Z, copy=False)
+
 
 # ------ HELPER FUNCTIONS -----------------------------------------------------------
 
-class Bachelier:
+class Bachelier_helper:
     def __init__(self, rf_rate=0.0, vol=None):
         self.rf_rate = rf_rate
         self.vol = vol
@@ -175,7 +236,7 @@ class Bachelier:
             return diff * norm.cdf(diff / const) + const * norm.pdf(diff / const)
 
         D = (spot * np.exp(rf_rate * T) - strike) / (vol * np.sqrt(T))
-        return np.exp(-rf_rate*T) * vol * np.sqrt(T) * (D * norm.cdf(D) + norm.pdf(D))
+        return np.exp(-rf_rate * T) * vol * np.sqrt(T) * (D * norm.cdf(D) + norm.pdf(D))
 
     def call_delta(self, spot, strike, T, vol=None, rf_rate=None):
         if vol is None:
@@ -250,36 +311,24 @@ class Bachelier:
 
             payoff = option.payoff(bT)
             Z = tape.gradient(payoff, s0)
-        '''
 
-        shape = [n, m]  # n simulations of m stocks
-        s0 = random.uniform(min, max, shape)  # initialize with uniform dist.
-        b0 = np.dot(s0, w)  # initial basket value
-        s0 = s0[np.argsort(b0)]
-        b0 = np.sort(b0).reshape(-1, 1)
-
-        sT = np.array(s0)
-        mean = np.zeros(m)
-        sT += np.sqrt(T) * random.multivariate_normal(mean, cov, n)  # Simulated endpoint for all stocks
-        bT = np.dot(sT, w)  # n simulated basket values at time T
-
-        payoff = np.maximum(bT - strike, 0).reshape(-1, 1)  # payoff of european option option
-
-        Z = np.dot(np.where(bT > strike, 1, 0).reshape(-1, 1), w.reshape(1, -1))  # Pathwise differentials
-        Z = np.transpose(Z[:, :, np.newaxis], axes=(1, 0, 2))  # transpose so dimensions fit
-        '''
         return np.array(s0), np.array(b0), np.array(payoff), np.array(Z)
 
 
-class BlackScholes:
+class BlackScholes_helper:
     def __init__(self, rf_rate, vol):
         self.rf_rate = rf_rate
         self.vol = vol
 
-    def call_price(self, spot, strike, T):
-        d1 = (np.log(spot / strike) + (self.rf_rate + 0.5 * self.vol ** 2) * T) / (self.vol * np.sqrt(T))
-        d2 = d1 - self.vol * np.sqrt(T)
-        return spot * norm.cdf(d1) - strike * np.exp(-self.rf_rate * T) * norm.cdf(d2)
+    def call_price(self, spot, strike, T, vol=None, rf_rate=None):
+        if vol is None:
+            vol = self.vol
+        if rf_rate is None:
+            rf_rate = self.rf_rate
+
+        d1 = (np.log(spot / strike) + (rf_rate + 0.5 * vol ** 2) * T) / (vol * np.sqrt(T))
+        d2 = d1 - vol * np.sqrt(T)
+        return spot * norm.cdf(d1) - strike * np.exp(-rf_rate * T) * norm.cdf(d2)
 
     def call_delta(self, spot, strike, T):
         d1 = (np.log(spot / strike) + (self.rf_rate + 0.5 * self.vol ** 2) * T) / (self.vol * np.sqrt(T))
@@ -387,7 +436,8 @@ class BlackScholes:
             s0 = tf.sort(tf.random.uniform([n, 1], min, max, dtype=tf.float64), axis=0)
             tape.watch(s0)
             z = tf.random.normal([n, 1], dtype=tf.float64)
-            sT = s0 * tf.exp((rf_rate - vol ** 2 / 2.0) * tf.cast(T, tf.float64) + vol * tf.sqrt(tf.cast(T, tf.float64)) * z)
+            sT = s0 * tf.exp(
+                (rf_rate - vol ** 2 / 2.0) * tf.cast(T, tf.float64) + vol * tf.sqrt(tf.cast(T, tf.float64)) * z)
             payoff = option.payoff(sT)
 
         Z = tape.gradient(payoff, s0)
@@ -404,4 +454,3 @@ def transform(x, K, b=None):
     c1 = np.arcsinh(b * (s_min - K))
     c2 = np.arcsinh(b * (s_max - K))
     return np.sinh(c2 * x + c1 * (1 - x)) / b + K
-
