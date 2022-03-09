@@ -50,24 +50,17 @@ class NeuralNetwork:
     def __init__(self, **kwargs):
         self.model = None
 
-    def compile(self, x, y, nlayers=4, nnodes=5, act='softplus', lr=0.1, seed=None, **kwargs):
-        scaler = StandardScaler()
-        scaler.fit(x)
-        y, *z = y
-        y = np.array(y).reshape(-1, 1)
-        z = np.array(z).reshape(-1, 1)
-        w = 0
-        if z.size > 0:
-            z_perm = np.transpose(z[:, :, np.newaxis], axes=(1, 0, 2))
-            lmbda = np.dot(np.transpose(y), y) / np.dot(np.transpose(z_perm[0, :, :]), z_perm[0, :, :])
-            w = lmbda / (1 + lmbda)
+    def __call__(self, x, **kwargs):
+        x = np.array(x).reshape(-1, 1)
+        return self.model.predict(x)
 
-        self.model = create_diffANN(scaler.mean_, scaler.scale_, nlayers, nnodes, act, seed)
+    def compile(self, mean=0, sd=1, w=None, nlayers=4, nnodes=5, act='softplus', lr=0.1, seed=None, **kwargs):
+        self.model = create_diffANN(mean, sd, nlayers, nnodes, act, seed)
         opt = keras.optimizers.Adam(learning_rate=lr)
-        if z.size > 0:
-            self.model.compile(loss='mse', optimizer=opt, loss_weights=[1 - w, w])
-        else:
+        if w is None:
             self.model.compile(loss='mse', optimizer=opt)
+        else:
+            self.model.compile(loss='mse', optimizer=opt, loss_weights=[1 - w, w])
 
         return self.model
 
@@ -83,7 +76,18 @@ class NeuralNetwork:
         return self.model
 
     def compile_fit(self, x, y, epochs=100, batch_size=250, nlayers=4, nnodes=5, act='softplus', lr=0.1, seed=None, **kwargs):
-        self.compile(x, y, nlayers, nnodes, act, lr, seed, **kwargs)
+        scaler = StandardScaler()
+        scaler.fit(x)
+        y, *z = y
+        y = np.array(y).reshape(-1, 1)
+        z = np.array(z).reshape(-1, 1)
+        w = None
+        if z.size > 0:
+            z_perm = np.transpose(z[:, :, np.newaxis], axes=(1, 0, 2))
+            lmbda = np.dot(np.transpose(y), y) / np.dot(np.transpose(z_perm[0, :, :]), z_perm[0, :, :])
+            w = lmbda / (1 + lmbda)
+
+        self.compile(scaler.mean_, scaler.scale_, w, nlayers, nnodes, act, lr, seed, **kwargs)
         self.fit(x, y, epochs, batch_size, **kwargs)
         return self.model
 
@@ -95,7 +99,9 @@ class NeuralNetwork:
         self.model.set_weights(model.model.get_weights())
         return self.model
 
-## Quick and dirty functions
+
+###### Quick and dirty functions
+
 def create_and_fit_diffANN(x, y, D, epochs=60, batch_size=250, nodes=5, activations="softplus", seed=None):
     scaler = StandardScaler()
     scaler.fit(x)
@@ -124,7 +130,7 @@ def create_and_fit_ANN(x, y, epochs=60, batch_size=250, nodes=5, activations="so
     opt = keras.optimizers.Adam(learning_rate=0.1)
     model.compile(loss='mse', optimizer=opt)
 
-    early_stopping_cb = keras.callbacks.EarlyStopping(patience=7, min_delta=0.001, restore_best_weights=True,
+    early_stopping_cb = keras.callbacks.EarlyStopping(patience=15, min_delta=0.000000001, restore_best_weights=True,
                                                       monitor='loss', verbose=1)
     lr_scheduler = keras.callbacks.ReduceLROnPlateau(factor=0.3, patience=4, monitor='loss', verbose=0)
     model.fit(x, y, epochs=epochs, batch_size=batch_size, callbacks=[lr_scheduler, early_stopping_cb], verbose=0)
@@ -136,6 +142,9 @@ class Ensemble:
     def __init__(self, n):
         self.n = n
         self.models = None
+
+    def __getitem__(self, item):
+        return self.models[item]
 
     def fit(self, x, y, D, full_data=False):
         if full_data is False:
@@ -164,4 +173,14 @@ class Ensemble:
 
     def delta_from_single(self, x, i=0):
         return self.models[int(i)].predict(x)[0]
+
+
+
+
+
+
+
+
+
+
 
