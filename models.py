@@ -4,6 +4,7 @@ from scipy.stats import norm
 from scipy.stats import multivariate_normal
 from scipy.stats.qmc import MultivariateNormalQMC
 import tensorflow as tf
+from scipy.optimize import root_scalar
 
 
 class EulerScheme:  # Abstract base class for different models
@@ -17,7 +18,7 @@ class EulerScheme:  # Abstract base class for different models
 
 
 class Bachelier_eulerScheme(EulerScheme):
-    def __init__(self, rf_rate, var, antithetic=True):
+    def __init__(self, rf_rate, var, antithetic=False):
         self.const = None
         self.dt = None
         self.dt_sqrt = None
@@ -45,7 +46,7 @@ class Bachelier_eulerScheme(EulerScheme):
 
 
 class BlackScholes_eulerScheme(EulerScheme):
-    def __init__(self, rf_rate, var, antithetic=True, quasi_mc=False):
+    def __init__(self, rf_rate, var, antithetic=False, quasi_mc=False):
         self.const = None
         self.dt = None
         self.dt_sqrt = None
@@ -111,7 +112,7 @@ class BlackScholes_eulerScheme(EulerScheme):
 
 
 class Vasicek_eulerScheme(EulerScheme):
-    def __init__(self, a, b, var, antithetic=False, quasi_mc=False):
+    def __init__(self, kappa, theta, var, antithetic=False, quasi_mc=False):
         self.const = None
         self.dt = None
         self.dt_sqrt = None
@@ -120,8 +121,8 @@ class Vasicek_eulerScheme(EulerScheme):
         self.m = None
         self.perm = None
         self.shuffler = None
-        self.a = a
-        self.b = b
+        self.kappa = kappa
+        self.theta = theta
         self.var = var
         self.antithetic = antithetic
         self.quasi_mc = quasi_mc
@@ -152,10 +153,10 @@ class Vasicek_eulerScheme(EulerScheme):
         else:
             z = self.gen.rvs(size=self.n).reshape((self.n, self.m))
 
-        return s0 + self.a * (self.b - s0) * self.dt + self.dt_sqrt * z
+        return s0 + self.kappa * (self.theta - s0) * self.dt + self.dt_sqrt * z
 
 
-def simulate_data(n, rng, option, model, seed=None):
+def simulate_data(n, rng, option, model, n_updates=None, seed=None):
     if seed is not None:  # Possibility of setting seed for reproducibility
         tf.random.set_seed(seed)
         np.random.seed(seed)
@@ -166,7 +167,7 @@ def simulate_data(n, rng, option, model, seed=None):
     if np.size(rng) == 2:  # Randomly generate spots in given range
         spot_min, spot_max = rng
     else:
-        spot_min = rng  # If only a single number is given all spots will start here
+        spot_min = rng  # If only kappa single number is given all spots will start here
         spot_max = rng
 
     is_simple = False  # Check if derivative is simple (and vocal about it)
@@ -175,30 +176,38 @@ def simulate_data(n, rng, option, model, seed=None):
             is_simple = True
 
     T = option.T
+    s0 = tf.random.uniform(n, spot_min, spot_max, dtype=tf.float32)  # Randomly select spots
 
     if is_simple and hasattr(model, 'simulate_endpoint'):  # Skip euler steps if possible
         with tf.GradientTape() as tape:
-            s0 = tf.random.uniform(n, spot_min, spot_max, dtype=tf.float32)  # Randomly select spots
-            tape.watch(s0)  # Spots are not tf.Variables, we tell tf to track anyway
+            #s0 = tf.random.uniform(n, spot_min, spot_max, dtype=tf.float32)  # Randomly select spots
+            tape.watch(s0)  # Spots are not tf.Variables, we tell TF to track anyway
             sT = model.simulate_endpoint(s0, T)
             payoff = option.payoff(sT)
         Z = tape.gradient(payoff, s0)
     else:
+        if n_updates is None:
+            end = int(T * 252)  # Update once every day
+            dt = 1 / 252
+        else:
+            end = n_updates
+            dt = T / end
+        '''
         if T < 1:
             end = 252  # Update 252 times
             dt = T / 252
         else:
             end = int(T * 252)  # Update once every day
             dt = 1 / 252
-
+        '''
         if hasattr(option, 'initialize'):
             option.initialize(dt=dt, end=end, T=T, n=n)
 
-        s0 = tf.random.uniform(n, spot_min, spot_max, dtype=tf.float32)  # Randomly select spots
+        #s0 = tf.random.uniform(n, spot_min, spot_max, dtype=tf.float32)  # Randomly select spots
         # Initialize constants that do not need to be recalculated for every ..
         model.initialize(dt=dt, s0=s0, T=T, end=end, n=n)  # .. iteration in euler scheme update
         with tf.GradientTape() as tape:
-            tape.watch(s0)  # Spots are not tf.Variables, we tell tf to track anyway
+            tape.watch(s0)  # Spots are not tf.Variables, we tell TF to track anyway
             st = s0
             price_path = [st]  # List to hold price-path
             for _ in range(end):
@@ -206,9 +215,9 @@ def simulate_data(n, rng, option, model, seed=None):
                 price_path.append(st)  # Add to price-path
 
             if is_simple:  # Find payoff
-                payoff = option.payoff(price_path[-1])
+                payoff = option.payoff(price_path[-1], dt=dt, end=end, n=n)
             else:
-                payoff = option.payoff(price_path)
+                payoff = option.payoff(price_path, dt=dt, end=end, n=n)
 
         # Get gradient of payoff w.r.t. spot (s0)
         Z = tape.gradient(payoff, s0)
@@ -217,7 +226,47 @@ def simulate_data(n, rng, option, model, seed=None):
     return np.array(s0, copy=False), np.array(payoff, copy=False), np.array(Z, copy=False)
 
 
-# ------ HELPER FUNCTIONS -----------------------------------------------------------
+###########################################################################################
+#################################### HELPER FUNCTIONS #####################################
+###########################################################################################
+
+class Vasicek_helper:
+    def __init__(self, vol, kappa, theta):
+        self.vol = vol
+        self.kappa = kappa
+        self.theta = theta
+
+    def p(self, t, T, r):
+        B = (1 - np.exp(-self.kappa * (T - t))) / self.kappa
+        A = (B - T + t) * (self.theta - 0.5 * self.vol ** 2 / self.kappa ** 2) - (self.vol * B) ** 2 / (4 * self.kappa)
+        return np.exp(A - B * r)
+
+    def r_star(self, c, t, T, equal_to=1):
+        def f(r, t, T):
+            return np.sum(c * self.p(t, T, r)) - equal_to
+        return root_scalar(f, args=(t, T), bracket=(-2, 2)).root
+
+    def bond_option(self, t, T, K, S, r):
+        ptT = self.p(t, T, r)
+        ptS = self.p(t, S, r)
+        sigma_p = (1 - np.exp(-self.kappa * (S - T))) / self.kappa * np.sqrt(self.vol ** 2 / (2 * self.kappa) * (1 - np.exp(-2 * self.kappa * (T - t))))
+        d = np.log(ptS / (ptT * K)) / sigma_p + sigma_p / 2
+
+        return ptS * norm.cdf(d) - ptT * K * norm.cdf(d - sigma_p)
+
+    def swaption_price(self, T, K, settlement_dates, r):
+        n = len(settlement_dates)
+        coverage = settlement_dates[1] - settlement_dates[0]
+        coupons = np.ones(n) * coverage * K
+        coupons[-1] += 1
+        r_star = self.r_star(coupons, T, settlement_dates)
+        strikes = self.p(T, settlement_dates, r_star)
+
+        if type(r) is int or type(r) is float:
+            return np.sum(coupons * self.bond_option(0, T, strikes, settlement_dates, r))
+        else:
+            return np.array([np.sum(coupons * self.bond_option(0, T, strikes, settlement_dates, i)) for i in r])
+
 
 class Bachelier_helper:
     def __init__(self, rf_rate=0.0, vol=None):
@@ -349,7 +398,19 @@ class BlackScholes_helper:
     def straddle_delta(self, spot, strike, T):
         return self.call_delta(spot, strike, T) + self.put_delta(spot, strike, T)
 
-    def simulate_price_path(self, n, spot, T, n_yearly_updates=252):
+    def digital_price(self, spot, strike, T):
+        d1 = (np.log(spot / strike) + (self.rf_rate + 0.5 * self.vol ** 2) * T) / (self.vol * np.sqrt(T))
+        d2 = d1 - self.vol * np.sqrt(T)
+        return np.exp(-self.rf_rate * T) * norm.cdf(d2)
+
+    def digital_delta(self, spot, strike, T):
+        return np.exp(-self.rf_rate * T) * (norm.pdf((np.log(spot / strike) +
+               (self.rf_rate + 0.5 * self.vol**2) * T) / (self.vol * np.sqrt(T)) -
+               self.vol * np.sqrt(T)) * (1 / strike / (spot / strike) / (self.vol * np.sqrt(T))))
+
+
+    def simulate_price_path(self, n, spot, T, n_yearly_updates=252, seed=None):
+        random.seed(seed)
         if np.size(spot) == 2:
             spot_min, spot_max = spot
         else:
