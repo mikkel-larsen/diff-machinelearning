@@ -20,48 +20,6 @@ class Digital:
         return tf.minimum(1, tf.maximum(0, self.a * spots + self.b))
 
 
-class Linear:
-    def __init__(self, timetomat):
-        self.T = timetomat
-        self.is_simple = False
-
-    def payoff(self, spots, **kwargs):
-        return spots[-1]
-
-
-class Spread:
-    def __init__(self, timetomat):
-        self.T = timetomat
-        self.is_simple = True
-
-    def payoff(self, spots, **kwargs):
-        return tf.abs(spots[:, 0] - spots[:, 1])
-
-
-class Bond_option:
-    def __init__(self, strike, T, S, term_structure):
-        self.strike = strike
-        self.T = T
-        self.S = S
-        self.term_structure = term_structure
-        self.is_simple = False
-
-    def payoff(self, rates, **kwargs):
-        dt = kwargs['dt']
-        discounting = tf.exp(-tf.math.reduce_sum(rates, axis=0) * dt)
-
-        return tf.maximum(discounting * (self.term_structure(self.T, self.S, rates[-1]) - self.strike), 0)
-
-
-class Zero_Coupon_Bond:
-    def __init__(self, timetomat):
-        self.T = timetomat
-
-    def payoff(self, rate_path, **kwargs):
-        dt = kwargs['dt']
-        return tf.exp(-tf.reduce_sum(rate_path, axis=0) * dt)
-
-
 class Swaption:
     def __init__(self, strike, timetomat, settlement_dates, term_structure, opt_type='receiver'):
         self.strike = strike
@@ -178,6 +136,7 @@ class Bermudan_Call:
         optimal_choice = tf.where(pv0 > continuation_value, pv0, pv1) * self.p(self.exersice_dates[0])
         return optimal_choice
 
+
 class Call_geometric:
     def __init__(self, strike, T):
         self.T = T
@@ -216,3 +175,45 @@ class Straddle:
 
     def payoff(self, spot, **kwargs):
         return tf.maximum(self.strike - spot, spot - self.strike)
+
+
+class Linear:
+    def __init__(self, timetomat):
+        self.T = timetomat
+        self.is_simple = False
+
+    def payoff(self, spots, **kwargs):
+        return spots[-1]
+
+
+class Spread:
+    def __init__(self, timetomat):
+        self.T = timetomat
+        self.is_simple = True
+
+    def payoff(self, spots, **kwargs):
+        return tf.abs(spots[:, 0] - spots[:, 1])
+
+
+class Bond_option:
+    def __init__(self, strike, T, S, term_structure):
+        self.strike = strike
+        self.T = T
+        self.S = S
+        self.term_structure = term_structure
+        self.is_simple = False
+
+    def payoff(self, rates, **kwargs):
+        dt = kwargs['dt']
+        discounting = tf.exp(-tf.math.reduce_sum(rates, axis=0) * dt)
+
+        return tf.maximum(discounting * (self.term_structure(self.T, self.S, rates[-1]) - self.strike), 0)
+
+
+class Zero_Coupon_Bond:
+    def __init__(self, timetomat):
+        self.T = timetomat
+
+    def payoff(self, rate_path, **kwargs):
+        dt = kwargs['dt']
+        return tf.exp(-tf.reduce_sum(rate_path, axis=0) * dt)
