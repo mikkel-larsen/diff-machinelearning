@@ -2,6 +2,8 @@ import tensorflow as tf
 import numpy as np
 from sklearn.preprocessing import PolynomialFeatures
 from sklearn.linear_model import LinearRegression
+from models import Vasicek_helper, BlackScholes_helper
+from ANN import create_and_fit_ANN
 
 class Digital:
     def __init__(self, strike, timetomat, epsilon):
@@ -61,17 +63,20 @@ class Zero_Coupon_Bond:
 
 
 class Swaption:
-    def __init__(self, strike, timetomat, settlement_dates, term_structure):
+    def __init__(self, strike, timetomat, settlement_dates, term_structure, opt_type='receiver'):
         self.strike = strike
         self.coverage = settlement_dates[1] - settlement_dates[0]
         self.T = timetomat
         self.settlement_dates = settlement_dates
         self.term_structure = term_structure
+        self.type = opt_type
         self.is_simple = False
 
     def payoff(self, rate, **kwargs):
         dt = kwargs['dt']
-        discounting = tf.exp(-tf.math.reduce_sum(rate, axis=0) * dt)
+        shape = np.shape(np.squeeze(rate))
+        axis = np.delete(np.arange(len(shape)), 1)
+        discounting = tf.exp(-tf.math.reduce_sum(rate, axis=axis) * dt)
 
         sum_discountings = 0
         for d in self.settlement_dates:
@@ -84,26 +89,28 @@ class Swaption:
         for d in self.settlement_dates:
             pv += (self.strike - par_rate) * self.term_structure(self.T, d, rate[-1]) * self.coverage
 
+        if self.type == 'payer':
+            return tf.maximum(- discounting * pv, 0)
+
         return tf.maximum(discounting * pv, 0)
 
 
 class Bermudan_Swaption:
-    def __init__(self, strike, early_excer, settlement_dates, term_structure):
+    def __init__(self, strike, early_excer, settlement_dates, term_structure, opt_type='receiver'):
         self.strike = strike
         self.coverage = settlement_dates[1] - settlement_dates[0]
         self.exercise_dates = early_excer
         self.T = max(early_excer)
         self.settlement_dates = settlement_dates
         self.term_structure = term_structure
+        self.type = opt_type
+        #self.decision_boundaries = decision_boundaries
         self.is_simple = False
 
     def payoff(self, rate, **kwargs):
         dt = kwargs['dt']
         n = kwargs['n']
         n_updates = kwargs['end']
-        # T1_index = int(T1 / T2 * n_updates)
-        # T2_index = n_updates
-        # T_index = np.array([T1_index, T2_index])
         exercise_dates_index = np.array([n_updates * t / self.T for t in self.exercise_dates], dtype=int)
 
         discounting = 1
@@ -122,68 +129,54 @@ class Bermudan_Swaption:
             for d in self.settlement_dates:
                 pv += (self.strike - par_rate) * self.term_structure(self.exercise_dates[i], d, rate[exercise_dates_index[i]]) * self.coverage
 
+            if self.type == 'payer':
+                pv = -pv
             ret.append(tf.maximum(discounting * pv, 0))
 
-        ret = tf.squeeze(tf.transpose(ret))
-        #ret[:, 1] = ret[:, 1] * tf.exp(-tf.math.reduce_sum(rate[exercise_dates_index[0]:exercise_dates_index[1]], axis=0) * dt)
-        pv1 = tf.reshape(ret[:, -1], (-1, 1))
-        for i in range(len(self.exercise_dates) - 1):
-            pv0 = tf.reshape(ret[:, -(i+2)], (-1, 1))
-            pv1 *= tf.exp(-tf.math.reduce_sum(rate[exercise_dates_index[-(i+2)]:exercise_dates_index[-(i+1)]], axis=0) * dt)
-            index = tf.squeeze(tf.where(tf.greater(tf.squeeze(pv0), 0)))
-            x = tf.gather(pv0, index)
-            y = tf.gather(pv1, index)
+        pv1 = ret[-1]
+        for i in range(1, len(self.exercise_dates)):
+            pv0 = ret[-(i+1)]
+            pv1 = pv1 * tf.exp(-tf.math.reduce_sum(rate[exercise_dates_index[-(i+1)]:exercise_dates_index[-i]], axis=0) * dt)
 
-            design = PolynomialFeatures(degree=4)
-            x = design.fit_transform(x)
-            lin_model = LinearRegression(fit_intercept=False)
-            lin_model.fit(x, y)
-            estimates = lin_model.predict(design.transform(tf.reshape(pv0, (-1, 1))))
-            pv1 = tf.where(tf.maximum(tf.cast(estimates, dtype=tf.float32), 0) >= pv0, pv1, pv0)
+            continuation_model = create_and_fit_ANN(rate[exercise_dates_index[-(i+1)]], pv1)
+            continuation_value = continuation_model(rate[exercise_dates_index[-(i+1)]])
+            continuation_value = tf.cast(tf.maximum(continuation_value, 0.0), tf.float32)
+
+            pv1 = tf.where(pv0 > continuation_value, pv0, pv1)
 
         return pv1 * tf.exp(-tf.math.reduce_sum(rate[:exercise_dates_index[0]], axis=0) * dt)
 
-
-        '''
-        ret_copy = np.transpose(np.array(ret, copy=True)).squeeze().fliplr()
-        value = ret_copy[:, 0]
-        for i in range(len(self.exercise_dates[:-1])):
-            design = PolynomialFeatures(degree=4)
-            linreg = LinearRegression(fit_intercept=False)
-            index = ret_copy[:, i+1] > 0
-            x = design.fit_transform(ret_copy[index, i+1])
-            linreg.fit(x, value[index])
-            estimates = linreg.predict(design.transform(ret_copy[:, i+1].reshape(-1, 1)))
-            value = np.where(estimates > ret[:, i+1])
-
-
-
-        ret = tf.squeeze(tf.transpose(ret))
-        pv0 = tf.reshape(ret[:, 0], (-1, 1))
-        pv1 = tf.reshape(ret[:, 1], (-1, 1))
-        i = tf.where(tf.greater(ret[:, 0], 0))
-        x = tf.gather(ret[:, 0], i)
-        y = tf.gather(ret[:, 1], i)
-        
-        design = PolynomialFeatures(degree=4)
-        x = design.fit_transform(x)
-        lin_model = LinearRegression(fit_intercept=False)
-        lin_model.fit(x, y)
-        estimates = lin_model.predict(design.transform(tf.reshape(ret[:, 0], (-1, 1))))
-        p = tf.where(tf.cast(tf.maximum(estimates, 0), dtype=tf.float32) >= pv0, pv1, pv0)
-        #print(tf.cast(tf.maximum(estimates, 0), dtype=tf.float32) > pv0)
-        return p
-        '''
 
 class Call:
     def __init__(self, strike, timetomat):
         self.strike = strike
         self.T = timetomat
+        self.is_simple = True
+
+    def payoff(self, spot, **kwargs):
+        return tf.maximum(spot - self.strike, 0)
+
+class Bermudan_Call:
+    def __init__(self, strike, exersice_dates, p):
+        self.strike = strike
+        self.exersice_dates = exersice_dates
+        self.T = max(exersice_dates)
+        self.p = p
         self.is_simple = False
 
     def payoff(self, spot, **kwargs):
-        return tf.maximum(spot[-1] - self.strike, 0)
+        n_updates = kwargs['end']
+        exersice_dates_index = np.array([n_updates * t / self.T for t in self.exersice_dates], dtype=int)
+        ret = []
+        for i in range(len(self.exersice_dates)):
+            ret.append(tf.maximum(spot[exersice_dates_index[i]] - self.strike, 0))
 
+        pv0 = ret[0]
+        pv1 = ret[1] * self.p(self.exersice_dates[1] - self.exersice_dates[0])
+        helper = BlackScholes_helper(-0.1, 0.2)
+        continuation_value = helper.call_price(spot[exersice_dates_index[0]], 100, self.exersice_dates[1] - self.exersice_dates[0])
+        optimal_choice = tf.where(pv0 > continuation_value, pv0, pv1) * self.p(self.exersice_dates[0])
+        return optimal_choice
 
 class Call_geometric:
     def __init__(self, strike, T):
