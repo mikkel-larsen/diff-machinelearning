@@ -39,6 +39,7 @@ class Multivariate_0mean_Normal:
         else:
             return self.gen.rvs(size=n).reshape(n, self.dim)
 
+
 class EulerScheme:  # Abstract base class for different models
     def initialize(self, **kwargs):
         # Initialize stuff that do not need to be
@@ -47,6 +48,7 @@ class EulerScheme:  # Abstract base class for different models
 
     def update_price_path(self, **kwargs):
         raise NotImplementedError  # A single euler step
+
 
 class Bachelier_eulerScheme(EulerScheme):
     def __init__(self, rf_rate, var, antithetic=False, quasi_mc=False):
@@ -71,6 +73,7 @@ class Bachelier_eulerScheme(EulerScheme):
     def update_price_path(self, s0, **kwargs):
         z = self.gen.generate_random(self.n)
         return s0 * self.const + self.dt_sqrt * z
+
 
 class BlackScholes_eulerScheme(EulerScheme):
     def __init__(self, rf_rate, var, antithetic=False, quasi_mc=False):
@@ -111,6 +114,7 @@ class BlackScholes_eulerScheme(EulerScheme):
         z = self.gen.generate_random(self.n)
         return s0 * (self.const + self.dt_sqrt * z)
 
+
 class Vasicek_eulerScheme(EulerScheme):
     def __init__(self, kappa, theta, var, antithetic=False, quasi_mc=False):
         self.const = None
@@ -134,6 +138,7 @@ class Vasicek_eulerScheme(EulerScheme):
     def update_price_path(self, s0, **kwargs):
         z = self.gen.generate_random(self.n)
         return s0 + self.kappa * (self.theta - s0) * self.dt + self.dt_sqrt * z
+
 
 class G2pp_eulerScheme(EulerScheme):
     def __init__(self, a1, a2, sigma1, sigma2, rho, antithetic=False, quasi_mc=False):
