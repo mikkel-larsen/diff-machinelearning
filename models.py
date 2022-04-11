@@ -1,11 +1,43 @@
 import numpy as np
 from numpy import random
 from scipy.stats import norm
+from scipy.stats import truncnorm
 from scipy.stats import multivariate_normal
 from scipy.stats.qmc import MultivariateNormalQMC
 import tensorflow as tf
 from scipy.optimize import root_scalar
+from scipy.integrate import quad
 
+class Multivariate_0mean_Normal:
+    def __init__(self, dim=1, var=None, antithetic=False, quasi_mc=False):
+        self.dim = dim
+        if var is None:
+            self.var = np.identity(dim)
+        else:
+            self.var = var
+        self.antithetic = antithetic
+        self.quasi_mc = quasi_mc
+
+        if quasi_mc:
+            self.gen = MultivariateNormalQMC(np.zeros(self.dim), self.var)
+            self.shuffler = np.random.default_rng()
+        elif antithetic:
+            self.gen = multivariate_normal(np.zeros(self.dim), self.var)
+        else:
+            self.gen = multivariate_normal(np.zeros(self.dim), self.var)
+
+    def generate_random(self, n=1):
+        if self.quasi_mc:
+            z = self.gen.random(n).reshape((n, self.dim))
+            perm = np.arange(n)
+            self.shuffler.shuffle(perm)
+            return z[perm]
+        elif self.antithetic:
+            n_half = (n + 1) // 2
+            z = self.gen.rvs(size=n_half).reshape(n, self.dim)
+            return np.row_stack((z, -z))[:n]
+        else:
+            return self.gen.rvs(size=n).reshape(n, self.dim)
 
 class EulerScheme:  # Abstract base class for different models
     def initialize(self, **kwargs):
@@ -16,9 +48,8 @@ class EulerScheme:  # Abstract base class for different models
     def update_price_path(self, **kwargs):
         raise NotImplementedError  # A single euler step
 
-
 class Bachelier_eulerScheme(EulerScheme):
-    def __init__(self, rf_rate, var, antithetic=False):
+    def __init__(self, rf_rate, var, antithetic=False, quasi_mc=False):
         self.const = None
         self.dt = None
         self.dt_sqrt = None
@@ -26,6 +57,7 @@ class Bachelier_eulerScheme(EulerScheme):
         self.n = None
         self.m = None
         self.antithetic = antithetic
+        self.quasi_mc = quasi_mc
         self.rf_rate = rf_rate
         self.var = var
 
@@ -34,16 +66,11 @@ class Bachelier_eulerScheme(EulerScheme):
         self.dt_sqrt = np.sqrt(self.dt)
         self.const = 1 + self.rf_rate * self.dt
         self.n, self.m = np.shape(kwargs['s0'])
-        if self.antithetic:
-            self.n = int(self.n / 2)
-        self.gen = multivariate_normal(np.zeros(self.m), self.var)
+        self.gen = Multivariate_0mean_Normal(self.m, self.var, self.antithetic, self.quasi_mc)
 
     def update_price_path(self, s0, **kwargs):
-        z = self.gen.rvs(size=self.n).reshape((self.n, self.m))
-        if self.antithetic:
-            z = np.row_stack((z, -z))
+        z = self.gen.generate_random(self.n)
         return s0 * self.const + self.dt_sqrt * z
-
 
 class BlackScholes_eulerScheme(EulerScheme):
     def __init__(self, rf_rate, var, antithetic=False, quasi_mc=False):
@@ -53,8 +80,6 @@ class BlackScholes_eulerScheme(EulerScheme):
         self.gen = None
         self.n = None
         self.m = None
-        self.perm = None
-        self.shuffler = None
         self.rf_rate = rf_rate
         self.var = var
         self.var_diag = None
@@ -66,29 +91,14 @@ class BlackScholes_eulerScheme(EulerScheme):
         self.dt_sqrt = np.sqrt(self.dt)
         self.const = 1 + self.rf_rate * self.dt
         self.n, self.m = np.shape(kwargs['s0'])
-
-        if self.quasi_mc:
-            self.gen = MultivariateNormalQMC(np.zeros(self.m), self.var)
-            self.perm = np.arange(self.n)
-            self.shuffler = np.random.default_rng()
-        elif self.antithetic:
-            self.n = int(self.n / 2)
-            self.gen = multivariate_normal(np.zeros(self.m), self.var)
-        else:
-            self.gen = multivariate_normal(np.zeros(self.m), self.var)
+        self.gen = Multivariate_0mean_Normal(self.m, self.var, self.antithetic, self.quasi_mc)
 
     def simulate_endpoint(self, s0, T):
         shape = np.shape(s0)
         n, m = shape
 
-        if self.quasi_mc:
-            z = MultivariateNormalQMC(np.zeros(m), self.var).random(n).reshape((n, m))
-        elif self.antithetic:
-            n = int(n / 2)
-            z = multivariate_normal(np.zeros(m), self.var).rvs(size=n).reshape((n, m))
-            z = np.row_stack((z, -z))
-        else:
-            z = multivariate_normal(np.zeros(m), self.var).rvs(size=n).reshape((n, m))
+        gen = Multivariate_0mean_Normal(m, self.var, self.antithetic, self.quasi_mc)
+        z = gen.generate_random(n)
 
         if type(self.var) is not list and type(self.var) is not np.ndarray:
             var_diag = self.var
@@ -98,18 +108,8 @@ class BlackScholes_eulerScheme(EulerScheme):
         return s0 * np.exp((self.rf_rate - var_diag / 2.0) * T + np.sqrt(T) * z)
 
     def update_price_path(self, s0, **kwargs):
-        if self.quasi_mc:
-            z = self.gen.random(self.n).reshape((self.n, self.m))
-            self.shuffler.shuffle(self.perm)
-            z = z[self.perm]
-        elif self.antithetic:
-            z = self.gen.rvs(size=self.n).reshape((self.n, self.m))
-            z = np.row_stack((z, -z))
-        else:
-            z = self.gen.rvs(size=self.n).reshape((self.n, self.m))
-
+        z = self.gen.generate_random(self.n)
         return s0 * (self.const + self.dt_sqrt * z)
-
 
 class Vasicek_eulerScheme(EulerScheme):
     def __init__(self, kappa, theta, var, antithetic=False, quasi_mc=False):
@@ -119,8 +119,6 @@ class Vasicek_eulerScheme(EulerScheme):
         self.gen = None
         self.n = None
         self.m = None
-        self.perm = None
-        self.shuffler = None
         self.kappa = kappa
         self.theta = theta
         self.var = var
@@ -131,29 +129,41 @@ class Vasicek_eulerScheme(EulerScheme):
         self.dt = kwargs['dt']
         self.dt_sqrt = np.sqrt(self.dt)
         self.n, self.m = np.shape(kwargs['s0'])
-
-        if self.quasi_mc:
-            self.gen = MultivariateNormalQMC(np.zeros(self.m), self.var)
-            self.perm = np.arange(self.n)
-            self.shuffler = np.random.default_rng()
-        elif self.antithetic:
-            self.n = int(self.n / 2)
-            self.gen = multivariate_normal(np.zeros(self.m), self.var)
-        else:
-            self.gen = multivariate_normal(np.zeros(self.m), self.var)
+        self.gen = Multivariate_0mean_Normal(self.m, self.var, self.antithetic, self.quasi_mc)
 
     def update_price_path(self, s0, **kwargs):
-        if self.quasi_mc:
-            z = self.gen.random(self.n).reshape((self.n, self.m))
-            self.shuffler.shuffle(self.perm)
-            z = z[self.perm]
-        elif self.antithetic:
-            z = self.gen.rvs(size=self.n).reshape((self.n, self.m))
-            z = np.row_stack((z, -z))
-        else:
-            z = self.gen.rvs(size=self.n).reshape((self.n, self.m))
-
+        z = self.gen.generate_random(self.n)
         return s0 + self.kappa * (self.theta - s0) * self.dt + self.dt_sqrt * z
+
+class G2pp_eulerScheme(EulerScheme):
+    def __init__(self, a1, a2, sigma1, sigma2, rho, antithetic=False, quasi_mc=False):
+        self.const = None
+        self.dt = None
+        self.dt_sqrt = None
+        self.gen = None
+        self.n = None
+        self.m = None
+        self.a1 = a1
+        self.a2 = a2
+        self.a = np.array([a1, a2])
+        self.sigma1 = sigma1
+        self.sigma2 = sigma2
+        self.sigma = np.array([sigma1, sigma2])
+        self.rho = rho
+        cov = rho * sigma1 * sigma2
+        self.var = np.array([[sigma1**2, cov], [cov, sigma2**2]])
+        self.antithetic = antithetic
+        self.quasi_mc = quasi_mc
+
+    def initialize(self, **kwargs):
+        self.dt = kwargs['dt']
+        self.dt_sqrt = np.sqrt(self.dt)
+        self.n, self.m = np.shape(kwargs['s0'])
+        self.gen = Multivariate_0mean_Normal(self.m, self.var, self.antithetic, self.quasi_mc)
+
+    def update_price_path(self, s0, **kwargs):
+        z = self.gen.generate_random(self.n)
+        return s0 * (1 - self.a * self.dt) + self.dt_sqrt * z
 
 
 def simulate_data(n, rng, option, model, n_updates=None, seed=None):
@@ -192,14 +202,7 @@ def simulate_data(n, rng, option, model, n_updates=None, seed=None):
         else:
             end = n_updates
             dt = T / end
-        '''
-        if T < 1:
-            end = 252  # Update 252 times
-            dt = T / 252
-        else:
-            end = int(T * 252)  # Update once every day
-            dt = 1 / 252
-        '''
+
         if hasattr(option, 'initialize'):
             option.initialize(dt=dt, end=end, T=T, n=n)
 
@@ -230,6 +233,110 @@ def simulate_data(n, rng, option, model, n_updates=None, seed=None):
 #################################### HELPER FUNCTIONS #####################################
 ###########################################################################################
 
+class G2pp_helper:
+    def __init__(self, a1, a2, sigma1, sigma2, rho):
+        self.a1 = a1
+        self.a2 = a2
+        self.sigma1 = sigma1
+        self.sigma2 = sigma2
+        self.rho = rho
+
+    def A(self, t, T):
+        timetomat = T - t
+        B1 = (1 - np.exp(-self.a1 * timetomat)) / self.a1
+        B2 = (1 - np.exp(-self.a2 * timetomat)) / self.a2
+        B12 = (1 - np.exp(-(self.a1 + self.a2) * timetomat)) / (self.a1 + self.a2)
+        V_sq = (self.sigma1 / self.a1)**2 * (timetomat - B1 - self.a1 * 0.5 * B1**2) + \
+               (self.sigma2 / self.a2)**2 * (timetomat - B2 - self.a2 * 0.5 * B2**2) + \
+               2 * self.sigma1 * self.sigma2 * self.rho / (self.a1 * self.a2) * (timetomat - B1 - B2 + B12)
+        return np.exp(0.5 * V_sq)
+
+    def B1(self, t, T):
+        timetomat = T - t
+        return (1 - np.exp(-self.a1 * timetomat)) / self.a1
+
+    def B2(self, t, T):
+        timetomat = T - t
+        return (1 - np.exp(-self.a2 * timetomat)) / self.a2
+
+    def B12(self, t, T):
+        timetomat = T - t
+        return (1 - np.exp(-(self.a1 + self.a2) * timetomat)) / (self.a1 + self.a2)
+
+    def p(self, t, T, r):
+        r1, r2 = np.transpose(r)
+        timetomat = T - t
+        B1 = self.B1(t, T)
+        B2 = self.B2(t, T)
+        B12 = self.B12(t, T)
+        V_sq = (self.sigma1 / self.a1)**2 * (timetomat - B1 - self.a1 * 0.5 * B1**2) + \
+               (self.sigma2 / self.a2)**2 * (timetomat - B2 - self.a2 * 0.5 * B2**2) + \
+               2 * self.sigma1 * self.sigma2 * self.rho / (self.a1 * self.a2) * (timetomat - B1 - B2 + B12)
+        M = r1 * B1 + r2 * B2
+        return np.exp(-M + 0.5 * V_sq)
+
+    def swaption_price(self, T, K, settlement_dates, r, opt_type='payer'):
+        if opt_type == 'receiver':
+            w = -1
+        else:
+            w = 1
+        B1 = self.B1(0, T)
+        B2 = self.B2(0, T)
+        B12 = self.B12(0, T)
+        sigma_tilde_1 = self.sigma1 * np.sqrt((1 - np.exp(-2 * self.a1 * T)) / (2 * self.a1))
+        sigma_tilde_2 = self.sigma2 * np.sqrt((1 - np.exp(-2 * self.a2 * T)) / (2 * self.a2))
+        rho_tilde = self.sigma1 * self.sigma2 * self.rho / (sigma_tilde_1 * sigma_tilde_2) * B12
+        mu_tilde_1 = self.sigma1**2 / (2 * self.a1**2) * (1 - np.exp(-2 * self.a1 * T)) + \
+                     self.sigma1 * self.sigma2 * self.rho / self.a2 * B12 - \
+                     (self.sigma1**2 / self.a1 + self.sigma1 * self.sigma2 * self.rho / self.a2) * B1
+        mu_tilde_2 = self.sigma2**2 / (2 * self.a2 ** 2) * (1 - np.exp(-2 * self.a2 * T)) + \
+                     self.sigma1 * self.sigma2 * self.rho / self.a1 * B12 - \
+                     (self.sigma2**2 / self.a2 + self.sigma1 * self.sigma2 * self.rho / self.a1) * B2
+
+        def kappav(x):
+            return - self.B2(T, settlement_dates) * \
+                   (mu_tilde_2 - sigma_tilde_2**2 * (1 - rho_tilde**2) * 0.5 *
+                    self.B2(T, settlement_dates) + rho_tilde * sigma_tilde_2 *
+                    (x - mu_tilde_1) / sigma_tilde_1)
+
+        cv = K * (settlement_dates - np.concatenate((T, settlement_dates[:-1])))
+        cv[-1] += 1
+
+        def lambdav(x):
+            return cv * self.A(T, settlement_dates) * np.exp(-x * self.B1(T, settlement_dates))
+
+        def x_bar(xx):
+            def f(r):
+                return np.sum(lambdav(xx) * np.exp(-r * self.B2(T, settlement_dates))) - 1
+            return root_scalar(f, bracket=(-2, 2)).root
+
+        def h1(x):
+            return (x_bar(x) - mu_tilde_2) / (sigma_tilde_2 * np.sqrt(1 - rho_tilde**2)) - \
+                   rho_tilde * (x - mu_tilde_1) / (sigma_tilde_1 * np.sqrt(1 - rho_tilde**2))
+
+        def h2v(x):
+            return h1(x) + self.B2(T, settlement_dates) * sigma_tilde_2 * np.sqrt(1 - rho_tilde**2)
+
+        grid = np.linspace(mu_tilde_1 - 0 * sigma_tilde_1, mu_tilde_1 + 6 * sigma_tilde_1, 200)
+        dx = grid[1] - grid[0]
+
+        def func(x, r):
+            return self.p(0, T, r) * np.exp(-0.5 * ((x - mu_tilde_1) / sigma_tilde_1)**2) / (sigma_tilde_1 * np.sqrt(2 * 3.141592)) * \
+                   (norm.cdf(-w * h1(x)) - np.sum(lambdav(x) * np.exp(kappav(x)) * norm.cdf(-w * h2v(x))))
+
+        ret = []
+        for rate in r:
+            tmp = 0
+            for x in grid:
+                tmp += np.exp(-0.5 * ((x - mu_tilde_1) / sigma_tilde_1)**2) * \
+                       (norm.cdf(-w * h1(x)) - np.sum(lambdav(x) * np.exp(kappav(x)) * norm.cdf(-w * h2v(x))))
+
+            #print(quad(func, mu_tilde_1, mu_tilde_1 + 6 * sigma_tilde_1, args=(rate)))
+            ret.append(w * tmp * dx * self.p(0, T, rate) / (sigma_tilde_1 * np.sqrt(2 * 3.141592)))
+
+        return np.squeeze(ret)
+
+
 class Vasicek_helper:
     def __init__(self, vol, kappa, theta):
         self.vol = vol
@@ -246,21 +353,29 @@ class Vasicek_helper:
             return np.sum(c * self.p(t, T, r)) - equal_to
         return root_scalar(f, args=(t, T), bracket=(-2, 2)).root
 
-    def bond_option(self, t, T, K, S, r):
+    def bond_option(self, t, T, K, S, r, opt_type='call'):
         ptT = self.p(t, T, r)
         ptS = self.p(t, S, r)
         sigma_p = (1 - np.exp(-self.kappa * (S - T))) / self.kappa * np.sqrt(self.vol ** 2 / (2 * self.kappa) * (1 - np.exp(-2 * self.kappa * (T - t))))
         d = np.log(ptS / (ptT * K)) / sigma_p + sigma_p / 2
 
+        if opt_type == 'put':
+            return ptT * K * norm.cdf(-d + sigma_p) - ptS * norm.cdf(-d)
         return ptS * norm.cdf(d) - ptT * K * norm.cdf(d - sigma_p)
 
-    def swaption_price(self, T, K, settlement_dates, r):
+    def swaption_price(self, T, K, settlement_dates, r, opt_type='receiver'):
         n = len(settlement_dates)
         coverage = settlement_dates[1] - settlement_dates[0]
         coupons = np.ones(n) * coverage * K
         coupons[-1] += 1
         r_star = self.r_star(coupons, T, settlement_dates)
         strikes = self.p(T, settlement_dates, r_star)
+
+        if opt_type == 'payer':
+            if type(r) is int or type(r) is float:
+                return np.sum(coupons * self.bond_option(0, T, strikes, settlement_dates, r, 'put'))
+            else:
+                return np.array([np.sum(coupons * self.bond_option(0, T, strikes, settlement_dates, i, 'put')) for i in r])
 
         if type(r) is int or type(r) is float:
             return np.sum(coupons * self.bond_option(0, T, strikes, settlement_dates, r))
