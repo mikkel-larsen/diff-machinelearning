@@ -34,7 +34,7 @@ class Multivariate_0mean_Normal:
             if ((n - 1) & n) != 0:
                 n_to_nearest_power_of_2 = 1 << n.bit_length()
                 z = self.gen.random(n_to_nearest_power_of_2)[:n].reshape(n, self.dim)
-                warnings.warn(f'Sobol algorithm relies on input being a power of 2, got {n}. Use {n_to_nearest_power_of_2} for proper results.')
+                warnings.warn(f'Sobol algorithm relies on input being a power of 2, got n={n}. Use n={n_to_nearest_power_of_2} for proper results.', stacklevel=2)
             else:
                 z = self.gen.random(n).reshape(n, self.dim)
 
